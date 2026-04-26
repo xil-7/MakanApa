@@ -27,7 +27,6 @@ function checkConfig() {
 function openConfig() {
     const modal = document.getElementById('auth-modal');
 
-    // Ambil nama sesuai halaman
     const savedName = isSellerPage ? localStorage.getItem('seller_name') : localStorage.getItem('buyer_name');
     const savedPhone = isSellerPage ? localStorage.getItem('seller_phone') : localStorage.getItem('buyer_phone');
 
@@ -41,7 +40,7 @@ function openConfig() {
     modal.classList.add('flex');
 }
 
-function saveConfig() {
+async function saveConfig() {
     const nameInput = document.getElementById('auth-name');
     const phoneInput = document.getElementById('auth-phone');
     let name = nameInput ? nameInput.value.trim() : '';
@@ -52,14 +51,14 @@ function saveConfig() {
         return;
     }
 
-    // --- AUTO GENERATE ID (Budi 1107) ---
-    const suffix = phone.slice(-4); // Ambil 4 angka terakhir nomor HP
+    // --- AUTO GENERATE ID (e.g. "Budi 1107") ---
+    const suffix = phone.slice(-4);
     if (!name.endsWith(suffix)) {
         name = `${name} ${suffix}`;
-        nameInput.value = name; // Update biar kelihatan di input
+        if (nameInput) nameInput.value = name;
     }
 
-    // --- SIMPAN TERPISAH (Biar Auxil & Budi gak berantem) ---
+    // --- Save separately so Buyer & Seller configs don't collide ---
     if (isSellerPage) {
         localStorage.setItem('seller_name', name);
         localStorage.setItem('seller_phone', phone);
@@ -67,16 +66,24 @@ function saveConfig() {
         localStorage.setItem('buyer_name', name);
         localStorage.setItem('buyer_phone', phone);
     }
-
-    // Simpan phone umum untuk login/cek config
     localStorage.setItem('user_phone', phone);
 
+    // Close the modal first so the UI feels snappy
     const modal = document.getElementById('auth-modal');
     if (modal) {
         modal.classList.add('hidden');
         modal.classList.remove('flex');
     }
-    alert("Profil Berhasil Disimpan!");
+
+    // --- AUTO-LOGIN: fetch/create the user row and refresh the UI immediately ---
+    await fetchUserProfile();
+
+    // On the seller page, re-render offer cards so seller name & contact populate right away
+    if (isSellerPage) {
+        loadSellerRequests();
+    }
+
+    alert("Profile saved! ✅");
 }
 
 // State
@@ -137,9 +144,16 @@ async function chooseAddress() {
     });
 }
 
-async function loadUserProfile() {
+/**
+ * fetchUserProfile — the single "auto-login" entry point.
+ * Reads the phone from localStorage, looks up (or creates) the matching
+ * row in `users`, stores it in currentDbUser, then refreshes all
+ * user-specific UI elements (balance, habits).
+ * Called on: page load, saveConfig(), submitTopup().
+ */
+async function fetchUserProfile() {
     const phone = isSellerPage ? localStorage.getItem('seller_phone') : localStorage.getItem('buyer_phone');
-    const name = isSellerPage ? localStorage.getItem('seller_name') : localStorage.getItem('buyer_name');
+    const name  = isSellerPage ? localStorage.getItem('seller_name')  : localStorage.getItem('buyer_name');
     if (!phone) return;
 
     try {
@@ -150,6 +164,7 @@ async function loadUserProfile() {
             .single();
 
         if (!data) {
+            // First time this user logs in — create their row with balance 0
             const { data: newUser, error: insertError } = await supabaseClient
                 .from('users')
                 .insert([{ phone: phone, name: name, balance: 0 }])
@@ -160,14 +175,18 @@ async function loadUserProfile() {
             data = newUser;
         }
 
+        // Update global state — everything downstream reads from currentDbUser
         currentDbUser = data;
         loadBalance();
         loadUserHabit();
         renderHabits();
     } catch (err) {
-        console.error("Profile Error:", err);
+        console.error("fetchUserProfile error:", err);
     }
 }
+
+// Backward-compat alias so any code still calling the old name works
+const loadUserProfile = fetchUserProfile;
 
 async function submitTopup() {
     const amountInput = document.getElementById('topup-amount');
@@ -179,7 +198,7 @@ async function submitTopup() {
     }
 
     try {
-        await loadUserProfile();
+        await fetchUserProfile();
 
         if (!currentDbUser) {
             alert("User data not found. Try saving your name and number in settings (⚙️)!");
@@ -196,19 +215,19 @@ async function submitTopup() {
 
         if (error) throw error;
 
-        // FIX 1: Immediately sync currentDbUser so loadBalance() reads the fresh value
-        // without needing a second network round-trip to Supabase.
+        // Immediately sync local state so loadBalance() shows the new value
         currentDbUser.balance = newBalance;
 
-        // Save top-up history to localStorage
-        let topups = JSON.parse(localStorage.getItem('topup_history') || '[]');
+        // Save top-up history keyed per-user (phone) for true data isolation
+        const topupKey = `topup_history_${localStorage.getItem('buyer_phone')}`;
+        let topups = JSON.parse(localStorage.getItem(topupKey) || '[]');
         topups.push({ amount: amount, date: Date.now() });
-        localStorage.setItem('topup_history', JSON.stringify(topups));
+        localStorage.setItem(topupKey, JSON.stringify(topups));
 
         alert("Top up success! Current Balance: Rp " + newBalance.toLocaleString('id-ID'));
 
         if (typeof closeTopupModal === 'function') closeTopupModal();
-        loadBalance(); // Now reads the updated currentDbUser.balance correctly
+        loadBalance();
     } catch (err) {
         console.error("Topup error:", err);
         alert("Top up failed: " + err.message);
@@ -868,7 +887,7 @@ function openOrder(seller, food, price, contact, maxStock) {
 
         if (!orderError) {
             saveUserHabit(food, price, false);
-            await loadUserProfile();
+            await fetchUserProfile(); // Refresh balance after deduction
 
             const msg = `Hi ${seller} \nI would like to place an order:\nFood: ${food}\nQuantity: ${qty}\nPrice per item: Rp ${Number(price).toLocaleString()}\nTotal: Rp ${total.toLocaleString()}\n\nName: ${buyerName}\nAddress: ${address}\n\nPlease confirm the order. Thank you`;
             const waLink = `https://wa.me/${contact}?text=${encodeURIComponent(msg)}`;
@@ -888,13 +907,25 @@ async function loadOrderHistory() {
     listEl.innerHTML = '<div class="text-center text-gray-500 py-4">Loading history...</div>';
 
     try {
-        const { data: orders, error } = await supabaseClient
+        // --- DATA ISOLATION: filter by the logged-in user's database ID ---
+        // Falls back to buyer_name match if currentDbUser isn't loaded yet
+        let ordersQuery = supabaseClient
             .from('orders')
             .select('*')
-            .eq('buyer_name', localStorage.getItem('buyer_name'))
             .order('created_at', { ascending: false });
 
-        let topups = JSON.parse(localStorage.getItem('topup_history') || '[]');
+        if (currentDbUser && currentDbUser.id) {
+            ordersQuery = ordersQuery.eq('user_id', currentDbUser.id);
+        } else {
+            // Fallback: match by buyer_name (less precise, used before profile loads)
+            ordersQuery = ordersQuery.eq('buyer_name', localStorage.getItem('buyer_name') || '');
+        }
+
+        const { data: orders, error } = await ordersQuery;
+
+        // Top-up history is keyed per phone number for per-user isolation
+        const topupKey = `topup_history_${localStorage.getItem('buyer_phone')}`;
+        let topups = JSON.parse(localStorage.getItem(topupKey) || '[]');
         let allHistory = [];
 
         if (orders) {
@@ -975,18 +1006,15 @@ function closeTopupModal() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    // FIX 2: This app uses localStorage-based identity (not Supabase Auth),
-    // so supabaseClient.auth.getSession() will always return null.
-    // We call loadUserProfile() unconditionally — it reads the phone from
-    // localStorage directly — to ensure currentDbUser is populated on every
-    // page load. The old session gate was preventing this from ever running,
-    // causing 401 errors on queries that needed a valid currentDbUser.
+    // Auto-login: if the user has already configured their profile, fetch their
+    // data from Supabase immediately so balance & history are ready without
+    // any manual action. Uses localStorage identity (not Supabase Auth).
     const phone = isSellerPage
         ? localStorage.getItem('seller_phone')
         : localStorage.getItem('buyer_phone');
 
     if (phone) {
-        await loadUserProfile();
+        await fetchUserProfile();
     }
 
     const UserInput = document.getElementById('user-input');
