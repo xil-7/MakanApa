@@ -7,21 +7,57 @@ const supabaseClient = window.supabase.createClient(supabaseUrl, supabaseKey);
 const isSellerPage = document.body.classList.contains('seller-theme');
 
 // --- CONFIGURATION CHECK LOGIC ---
-function checkConfig() {
+function isProfileSet() {
     if (isSellerPage) {
-        if (!localStorage.getItem('seller_phone') || !localStorage.getItem('seller_name')) {
-            alert("Shop settings missing! Please click the ⚙️ icon to fill in your Shop Name & WhatsApp Number.");
-            if (typeof openConfig === 'function') openConfig();
-            return false;
-        }
+        return !!(localStorage.getItem('seller_phone') && localStorage.getItem('seller_name'));
     } else {
-        if (!localStorage.getItem('buyer_phone') || !localStorage.getItem('buyer_name')) {
-            alert("Oops! Please click the ⚙️ icon to fill in your Name & Phone Number first.");
-            if (typeof openConfig === 'function') openConfig();
-            return false;
-        }
+        return !!(localStorage.getItem('buyer_phone') && localStorage.getItem('buyer_name'));
+    }
+}
+
+function checkProfile() {
+    if (!isProfileSet()) {
+        showToast('Profile Setup Required', 'Please set up your Name and Phone Number in Settings (⚙️) first!', 'error');
+        if (typeof openConfig === 'function') openConfig();
+        return false;
     }
     return true;
+}
+
+function updateGatekeeperUI() {
+    const profileSet = isProfileSet();
+    
+    // Buyer UI lock
+    if (!isSellerPage) {
+        const sendBtn = document.getElementById('send-btn');
+        const userInput = document.getElementById('user-input');
+        
+        if (sendBtn) {
+            if (!profileSet) {
+                sendBtn.style.opacity = '0.5';
+                sendBtn.style.cursor = 'not-allowed';
+                sendBtn.classList.remove('hover:scale-105', 'active:scale-95');
+            } else {
+                sendBtn.style.opacity = '1';
+                sendBtn.style.cursor = 'pointer';
+                sendBtn.classList.add('hover:scale-105', 'active:scale-95');
+            }
+        }
+        
+        if (userInput) {
+            if (!profileSet) {
+                userInput.placeholder = "Profile Setup Required. Click ⚙️ to set up.";
+                userInput.disabled = true;
+                userInput.style.opacity = '0.5';
+                userInput.style.cursor = 'not-allowed';
+            } else {
+                userInput.placeholder = "What are you craving? 🤔";
+                userInput.disabled = false;
+                userInput.style.opacity = '1';
+                userInput.style.cursor = 'text';
+            }
+        }
+    }
 }
 
 function openConfig() {
@@ -82,6 +118,8 @@ async function saveConfig() {
     if (isSellerPage) {
         loadSellerRequests();
     }
+
+    updateGatekeeperUI();
 
     alert("Profile saved! ✅");
 }
@@ -213,7 +251,7 @@ async function locateMeOnMap() {
 
 const handleSend = async (e) => {
     if (e) e.preventDefault();
-    if (!checkConfig()) return;
+    if (!checkProfile()) return;
     if (isProcessing) return;
 
     const val = userInput.value.trim();
@@ -719,6 +757,10 @@ async function loadSellerRequests() {
         const savedSellerName = localStorage.getItem('seller_name') || 'Not Set';
         const savedSellerPhone = localStorage.getItem('seller_phone') || 'Not Set';
 
+        const profileSet = isProfileSet();
+        const disableAttr = profileSet ? '' : 'disabled';
+        const opacityCls = profileSet ? '' : 'opacity-50 cursor-not-allowed';
+
         requests.forEach(req => {
             const card = document.createElement('div');
             card.className = 'bg-white p-4 rounded-xl shadow-sm border border-blue-100 mb-2';
@@ -738,37 +780,39 @@ async function loadSellerRequests() {
                         <input type="text" id="offer-name-${req.id}" 
                             placeholder="Ex: Nasi Goreng Special" 
                             oninput="window.handleAutoPrice(${req.id})"
-                            class="w-2/3 p-2 rounded border outline-none focus:border-blue-500">
+                            ${disableAttr}
+                            class="w-2/3 p-2 rounded border outline-none focus:border-blue-500 ${opacityCls}">
                         
                         <input type="text" id="offer-size-${req.id}" 
                             placeholder="Size/Notes" 
-                            class="w-1/3 p-2 rounded border outline-none focus:border-blue-500 bg-white">
+                            ${disableAttr}
+                            class="w-1/3 p-2 rounded border outline-none focus:border-blue-500 bg-white ${opacityCls}">
                     </div>
                     
                     <div class="flex gap-2 mb-2">
                         <div class="w-1/2">
                             <label class="text-[9px] text-gray-400 uppercase font-bold">Selling as:</label>
-                            <input type="text" id="offer-seller-${req.id}" value="${savedSellerName}" readonly class="w-full p-2 rounded border bg-gray-100 text-gray-500 text-xs"/>
+                            <input type="text" id="offer-seller-${req.id}" value="${savedSellerName}" readonly class="w-full p-2 rounded border bg-gray-100 text-gray-500 text-xs ${opacityCls}"/>
                         </div>
                         <div class="w-1/2">
                             <label class="text-[9px] text-gray-400 uppercase font-bold">WA Contact:</label>
-                            <input type="text" id="offer-contact-${req.id}" value="${savedSellerPhone}" readonly class="w-full p-2 rounded border bg-gray-100 text-gray-500 text-xs"/>
+                            <input type="text" id="offer-contact-${req.id}" value="${savedSellerPhone}" readonly class="w-full p-2 rounded border bg-gray-100 text-gray-500 text-xs ${opacityCls}"/>
                         </div>
                     </div>
                     
                     <div class="flex gap-2 mb-2">
-                        <input type="number" id="offer-price-${req.id}" placeholder="Price (Rp)" class="w-1/2 p-2 rounded border border-blue-200 bg-blue-50 font-bold text-blue-700">
-                        <input type="number" id="offer-stock-${req.id}" placeholder="Qty" value="1" class="w-1/2 p-2 rounded border focus:border-orange-500">
+                        <input type="number" id="offer-price-${req.id}" placeholder="Price (Rp)" ${disableAttr} class="w-1/2 p-2 rounded border border-blue-200 bg-blue-50 font-bold text-blue-700 ${opacityCls}">
+                        <input type="number" id="offer-stock-${req.id}" placeholder="Qty" value="1" ${disableAttr} class="w-1/2 p-2 rounded border focus:border-orange-500 ${opacityCls}">
                     </div>
 
                     <div class="mb-3">
                         <label class="text-xs font-bold text-gray-500 mb-1 block">Upload Photo</label>
-                        <input type="file" id="offer-media-${req.id}" accept="image/*,video/*" class="w-full text-xs text-gray-500" onchange="previewMedia(this, ${req.id})">
+                        <input type="file" id="offer-media-${req.id}" accept="image/*,video/*" ${disableAttr} class="w-full text-xs text-gray-500 ${opacityCls}" onchange="previewMedia(this, ${req.id})">
                         <div id="media-preview-${req.id}" class="mt-2 hidden"></div>
                     </div>
 
-                    <button id="submit-btn-${req.id}" onclick="submitOffer(${req.id})" class="w-full bg-blue-600 text-white font-bold py-2 rounded-lg hover:bg-blue-700 transition-colors shadow-sm">
-                        Submit Offer
+                    <button id="submit-btn-${req.id}" onclick="${profileSet ? `submitOffer(${req.id})` : `checkProfile()`}" class="w-full bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors shadow-sm ${profileSet ? 'hover:bg-blue-700' : 'opacity-50 cursor-not-allowed'}">
+                        ${profileSet ? 'Submit Offer' : 'Profile Setup Required'}
                     </button>
                 </div>
             `;
@@ -781,6 +825,8 @@ async function loadSellerRequests() {
 }
 
 async function submitOffer(reqId) {
+    if (!checkProfile()) return;
+
     // 1. Ambil input yang MEMANG diketik seller (Menu & Harga)
     const foodName = document.getElementById(`offer-name-${reqId}`).value;
     const price = document.getElementById(`offer-price-${reqId}`).value;
@@ -793,9 +839,6 @@ async function submitOffer(reqId) {
     const contact = localStorage.getItem('seller_phone');
 
     // Validasi dasar
-    if (!sellerName || !contact) {
-        return alert("Klik ikon ⚙️ dulu untuk isi profil seller!");
-    }
     if (!foodName || !price) {
         return alert("Isi nama makanan dan harga dulu ya!");
     }
@@ -962,6 +1005,7 @@ function openOrder(seller, food, price, contact, maxStock, offerId) {
 }
 
 async function submitOrder() {
+    if (!checkProfile()) return;
     if (!currentDbUser) return showToast('Hold on!', 'Set up your profile first via the ⚙️ icon.', 'error');
     const { seller, food, price, contact, maxStock } = currentOrderContext;
     const stock = parseInt(maxStock) || 99;
@@ -1498,6 +1542,7 @@ function closeTopupModal() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    updateGatekeeperUI();
     const phone = (typeof isSellerPage !== 'undefined' && isSellerPage) ? localStorage.getItem('seller_phone') : localStorage.getItem('buyer_phone');
     if (phone) await fetchUserProfile();
 
@@ -1517,6 +1562,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             processing = true;
             UserInput.value = '';
             addMessage(val, 'user');
+            if (!checkProfile()) { processing = false; return; }
             if (typeof sendRequest === 'function') sendRequest(val);
             setTimeout(() => { processing = false; }, 500);
         };
