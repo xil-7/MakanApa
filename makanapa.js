@@ -196,6 +196,10 @@ async function submitTopup() {
 
         if (error) throw error;
 
+        // FIX 1: Immediately sync currentDbUser so loadBalance() reads the fresh value
+        // without needing a second network round-trip to Supabase.
+        currentDbUser.balance = newBalance;
+
         // Save top-up history to localStorage
         let topups = JSON.parse(localStorage.getItem('topup_history') || '[]');
         topups.push({ amount: amount, date: Date.now() });
@@ -204,7 +208,7 @@ async function submitTopup() {
         alert("Top up success! Current Balance: Rp " + newBalance.toLocaleString('id-ID'));
 
         if (typeof closeTopupModal === 'function') closeTopupModal();
-        loadBalance();
+        loadBalance(); // Now reads the updated currentDbUser.balance correctly
     } catch (err) {
         console.error("Topup error:", err);
         alert("Top up failed: " + err.message);
@@ -971,10 +975,17 @@ function closeTopupModal() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    const { data: { session } } = await supabaseClient.auth.getSession();
+    // FIX 2: This app uses localStorage-based identity (not Supabase Auth),
+    // so supabaseClient.auth.getSession() will always return null.
+    // We call loadUserProfile() unconditionally — it reads the phone from
+    // localStorage directly — to ensure currentDbUser is populated on every
+    // page load. The old session gate was preventing this from ever running,
+    // causing 401 errors on queries that needed a valid currentDbUser.
+    const phone = isSellerPage
+        ? localStorage.getItem('seller_phone')
+        : localStorage.getItem('buyer_phone');
 
-    if (session) {
-        currentUser = session.user;
+    if (phone) {
         await loadUserProfile();
     }
 
