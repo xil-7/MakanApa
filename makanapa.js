@@ -94,10 +94,122 @@ let userHabit = null;
 let currentUser = null;
 let currentDbUser = null;
 let isProcessing = false;
+let deliveryMap = null;
+let deliveryMarker = null;
+let deliveryCoords = null; // { lat, lng }
+let currentOrderContext = {}; // seller/food/price/contact/stock for submitOrder
 
 // UI Elements
 const chatArea = document.getElementById('chat-area');
 const userInput = document.getElementById('user-input');
+
+/* ── TOAST SYSTEM ── */
+function showToast(title, message, type = 'default', duration = 4500) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+    const icons = { default: '🔔', success: '✅', error: '❌', buyer: '🛵', seller: '📦' };
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+        <div class="toast-icon">${icons[type] || '🔔'}</div>
+        <div class="toast-body">
+            <div class="toast-title">${title}</div>
+            ${message ? `<div class="toast-message">${message}</div>` : ''}
+        </div>`;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.classList.add('removing');
+        setTimeout(() => toast.remove(), 320);
+    }, duration);
+}
+
+/* ── SPINNER ── */
+function showSpinner() { const el = document.getElementById('loading-overlay'); if (el) el.classList.remove('hidden'); }
+function hideSpinner() { const el = document.getElementById('loading-overlay'); if (el) el.classList.add('hidden'); }
+
+/* ── QTY STEPPER with stock-guard toast ── */
+function changeQty(delta) {
+    const input = document.getElementById('order-qty');
+    if (!input) return;
+    const max = parseInt(input.max) || 99;
+    let val = parseInt(input.value || 1) + delta;
+    if (val < 1) val = 1;
+    if (val > max) {
+        showToast('Stock limit reached', `Sorry, only ${max} item(s) available!`, 'error', 3000);
+        val = max;
+    }
+    input.value = val;
+    // Manually fire the oninput handler so the total re-calculates
+    input.dispatchEvent(new Event('input'));
+}
+
+/* ── LEAFLET MAP ── */
+function initDeliveryMap() {
+    if (!window.L) return;
+    const mapEl = document.getElementById('delivery-map');
+    if (!mapEl) return;
+
+    // Destroy previous instance if any
+    if (deliveryMap) { deliveryMap.remove(); deliveryMap = null; deliveryMarker = null; }
+
+    const defaultLat = -6.2088; // Jakarta fallback
+    const defaultLng = 106.8456;
+
+    deliveryMap = L.map('delivery-map', { zoomControl: true }).setView([defaultLat, defaultLng], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap',
+        maxZoom: 19
+    }).addTo(deliveryMap);
+
+    const pinIcon = L.divIcon({
+        html: '<div style="font-size:28px;line-height:1;">📍</div>',
+        iconAnchor: [14, 28],
+        className: ''
+    });
+
+    deliveryMarker = L.marker([defaultLat, defaultLng], { draggable: true, icon: pinIcon }).addTo(deliveryMap);
+    deliveryCoords = { lat: defaultLat, lng: defaultLng };
+
+    deliveryMarker.on('dragend', async (e) => {
+        const { lat, lng } = e.target.getLatLng();
+        deliveryCoords = { lat, lng };
+        try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`);
+            const d = await res.json();
+            const addrEl = document.getElementById('order-address');
+            if (addrEl) addrEl.value = d.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+        } catch(_) {}
+    });
+
+    deliveryMap.on('click', (e) => {
+        const { lat, lng } = e.latlng;
+        deliveryMarker.setLatLng([lat, lng]);
+        deliveryCoords = { lat, lng };
+    });
+
+    // Fix Leaflet tile rendering in modals
+    setTimeout(() => deliveryMap.invalidateSize(), 320);
+}
+
+async function locateMeOnMap() {
+    if (!navigator.geolocation) { showToast('Geolocation not supported', '', 'error'); return; }
+    navigator.geolocation.getCurrentPosition(async pos => {
+        const { latitude: lat, longitude: lng } = pos.coords;
+        deliveryCoords = { lat, lng };
+        if (deliveryMap && deliveryMarker) {
+            deliveryMap.setView([lat, lng], 16);
+            deliveryMarker.setLatLng([lat, lng]);
+        }
+        try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`);
+            const d = await res.json();
+            const addrEl = document.getElementById('order-address');
+            if (addrEl) addrEl.value = d.display_name;
+            localStorage.setItem('buyer_address', d.display_name);
+        } catch(_) {}
+        showToast('Location pinned!', 'Drag the marker to adjust.', 'success');
+    }, () => showToast('Permission denied', 'Enable location access.', 'error'));
+}
 
 const handleSend = async (e) => {
     if (e) e.preventDefault();
@@ -475,10 +587,11 @@ function renderAuction(offers) {
         auctionContainer = document.createElement('div');
         auctionContainer.className = 'bot-msg message-bubble w-full';
         auctionContainer.innerHTML = `
-            <div class="font-bold text-orange-600 mb-2 text-sm flex items-center gap-2">
-                <span class="animate-pulse text-red-500">●</span> 🔥 LIVE OFFERS
+            <div class="font-bold mb-3 text-sm flex items-center gap-2" style="color:#FF7A00;">
+                <span class="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                🔥 LIVE OFFERS — Choose your best deal!
             </div>
-            <div id="auction-list" class="flex flex-col gap-2"></div>
+            <div id="auction-list" class="flex flex-col gap-3"></div>
         `;
         chatArea.appendChild(auctionContainer);
     }
@@ -492,7 +605,6 @@ function renderAuction(offers) {
     offers.forEach(o => {
         const weight = parseInt(o.weight_volume) || 0;
         const price = parseInt(o.price) || 1;
-
         o.valueScore = weight > 0 ? (weight / (price / 1000)) : 0;
         if (o.valueScore > maxScore) maxScore = o.valueScore;
         if (price < minPrice) minPrice = price;
@@ -503,62 +615,51 @@ function renderAuction(offers) {
         const isBestValue = (offer.valueScore === maxScore && maxScore > 0);
         const isCheapest = (price === minPrice);
 
-        let cardStyle = 'border border-gray-100 bg-white opacity-90';
+        // Cheapest gets the golden glow class
+        let extraClass = '';
         let badgeHTML = '';
 
-        if (isBestValue && isCheapest) {
-            cardStyle = 'border-2 border-green-500 bg-green-50 shadow-md transform scale-[1.02] transition-transform animate-[pulse_2s_ease-in-out_infinite]';
-            badgeHTML = `<div class="text-[10px] font-bold text-green-600 mt-1 flex items-center gap-1">✨ MOST WORTH IT & CHEAPEST!</div>`;
-        } else if (isBestValue) {
-            cardStyle = 'border-2 border-green-500 bg-green-50 shadow-md transform scale-[1.02] transition-transform animate-[pulse_2s_ease-in-out_infinite]';
-            badgeHTML = `<div class="text-[10px] font-bold text-green-600 mt-1 flex items-center gap-1">✨ MOST WORTH IT</div>`;
+        if (isCheapest && isBestValue) {
+            extraClass = 'cheapest-pulse';
+            badgeHTML = `<span class="badge-value">⭐ Best Value + Cheapest!</span>`;
         } else if (isCheapest) {
-            cardStyle = 'border-2 border-blue-400 bg-blue-50 shadow-sm';
-            badgeHTML = `<div class="text-[10px] font-bold text-blue-600 mt-1 flex items-center gap-1">💸 CHEAPEST</div>`;
+            extraClass = 'cheapest-pulse';
+            badgeHTML = `<span class="badge-value">💰 Best Value!</span>`;
+        } else if (isBestValue) {
+            badgeHTML = `<span style="display:inline-flex;align-items:center;gap:4px;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;font-size:10px;font-weight:800;padding:3px 10px;border-radius:999px;margin-top:4px;">✨ Most Worth It</span>`;
         }
 
         let mediaHTML = '';
         if (offer.media_url) {
             const isVideo = offer.media_url.match(/\.(mp4|webm|ogg)$/i);
-            if (isVideo) {
-                mediaHTML = `
-                    <video class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-100" muted loop onmouseover="this.play()" onmouseout="this.pause()">
-                        <source src="${offer.media_url}" type="video/mp4">
-                    </video>`;
-            } else {
-                mediaHTML = `
-                    <img src="${offer.media_url}" 
-                        class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-100" 
-                        alt="${offer.food_name}"
-                        onclick="window.open('${offer.media_url}', '_blank')">`;
-            }
+            mediaHTML = isVideo
+                ? `<video class="w-full h-36 object-cover rounded-2xl mb-3" muted loop onmouseover="this.play()" onmouseout="this.pause()"><source src="${offer.media_url}" type="video/mp4"></video>`
+                : `<img src="${offer.media_url}" class="w-full h-36 object-cover rounded-2xl mb-3" alt="${offer.food_name}" onclick="window.open('${offer.media_url}','_blank')" style="cursor:zoom-in;">`;
         }
 
-        // Combine Seller Name and Last 4 Digits for Display
-        const sellerPhoneLast4 = offer.contact && offer.contact.length >= 4 ? offer.contact.slice(-4) : offer.contact;
-        const displaySellerName = `${offer.seller_name} ${sellerPhoneLast4}`;
+        const sellerPhoneLast4 = offer.contact && offer.contact.length >= 4 ? offer.contact.slice(-4) : (offer.contact || '');
+        const displaySellerName = `${offer.seller_name} ·${sellerPhoneLast4}`;
 
         const card = document.createElement('div');
-        card.className = `auction-card p-3 rounded-xl flex flex-col gap-1 transition-all ${cardStyle}`;
+        card.className = `auction-card p-4 flex flex-col gap-1 ${extraClass}`;
 
         card.innerHTML = `
-            ${mediaHTML} 
-            <div class="flex justify-between items-start">
+            ${mediaHTML}
+            <div class="flex justify-between items-start gap-2">
                 <div class="flex-1">
-                    <div class="text-[9px] text-gray-400 font-bold uppercase tracking-wider"><i class="fa-solid fa-store"></i> ${displaySellerName}</div>
-                    <div class="font-bold text-gray-800 text-sm mt-0.5">
-                        ${offer.food_name}
+                    <div class="text-[10px] text-gray-400 font-semibold uppercase tracking-wider flex items-center gap-1">
+                        <i class="fa-solid fa-store" style="color:#0D9488;"></i> ${displaySellerName}
                     </div>
-                    ${badgeHTML}
+                    <div class="font-bold text-gray-800 text-base mt-0.5">${offer.food_name}</div>
+                    <div class="mt-1">${badgeHTML}</div>
                 </div>
-                <div class="text-right flex flex-col items-end">
-                    <div class="text-sm font-bold text-orange-600">
-                        Rp ${price.toLocaleString('id-ID')}
-                    </div>
+                <div class="text-right flex flex-col items-end gap-2 flex-shrink-0">
+                    <div class="font-bold text-lg" style="color:#FF7A00;">Rp ${price.toLocaleString('id-ID')}</div>
                     <button
-                        onclick="openOrder('${offer.seller_name}', '${offer.food_name.replace(/'/g, "\\'")}', '${offer.price}', '${offer.contact}', '${offer.stock}')"
-                        class="bg-orange-500 text-white text-[10px] px-4 py-1.5 rounded-lg mt-2 font-bold hover:bg-orange-600 active:scale-95 transition-transform shadow-sm">
-                        CHOOSE
+                        onclick="openOrder('${offer.seller_name}','${offer.food_name.replace(/'/g,"\\'")}','${offer.price}','${offer.contact}','${offer.stock || 99}')"
+                        class="text-white text-xs px-5 py-2 rounded-2xl font-bold active:scale-95 transition-all shadow-md"
+                        style="background:linear-gradient(135deg,#FF7A00,#FF9A3C);box-shadow:0 4px 14px rgba(255,122,0,0.4);">
+                        Choose
                     </button>
                 </div>
             </div>
@@ -678,6 +779,7 @@ async function submitOffer(reqId) {
     // 1. Ambil input yang MEMANG diketik seller (Menu & Harga)
     const foodName = document.getElementById(`offer-name-${reqId}`).value;
     const price = document.getElementById(`offer-price-${reqId}`).value;
+    const stockVal = parseInt(document.getElementById(`offer-stock-${reqId}`).value) || 1;
     const mediaFile = document.getElementById(`offer-media-${reqId}`).files[0];
     const btn = document.getElementById(`submit-btn-${reqId}`);
 
@@ -726,6 +828,7 @@ async function submitOffer(reqId) {
         seller_name: sellerName, // DIAMBIL DARI MEMORI
         food_name: foodName,
         price: parseInt(price),
+        stock: stockVal,
         contact: contact,       // DIAMBIL DARI MEMORI
         media_url: finalMediaUrl
     }]);
@@ -804,193 +907,553 @@ function closeHistoryModal() {
 }
 
 function openOrder(seller, food, price, contact, maxStock) {
+    currentOrderContext = { seller, food, price, contact, maxStock };
     const modal = document.getElementById('order-modal');
-    const qtyInput = document.getElementById('order-qty');
-    qtyInput.max = maxStock;
-
-    qtyInput.addEventListener('input', function () {
-        if (parseInt(this.value) > parseInt(maxStock)) {
-            this.value = maxStock;
-            updateTotal();
-            alert(`Maximum remaining portion/stock for this order is ${maxStock}!`);
-        }
-    });
-
-    if (!modal) return console.error("Modal not found");
-
+    if (!modal) return;
     modal.classList.remove('hidden');
     modal.classList.add('flex');
 
-    document.getElementById('modal-seller-name').innerText = seller;
+    document.getElementById('modal-seller-name').innerText = '🏪 ' + seller;
     document.getElementById('modal-food-name').innerText = food;
-    document.getElementById('modal-price').innerText = "Rp " + Number(price).toLocaleString();
+    document.getElementById('modal-price').innerText = 'Rp ' + Number(price).toLocaleString('id-ID');
 
-    const savedAddress = localStorage.getItem('buyer_address');
-    if (savedAddress) {
-        document.getElementById('order-address').value = savedAddress;
-    }
-
-    const savedName = localStorage.getItem('buyer_name');
-    if (savedName) {
-        document.getElementById('buyer-name').value = savedName;
-    }
-
-    document.getElementById('buyer-name').onchange = e => {
-        localStorage.setItem('buyer_name', e.target.value);
-    };
+    const qtyInput = document.getElementById('order-qty');
+    const stock = parseInt(maxStock) || 99;
+    qtyInput.min = 1;
+    qtyInput.max = stock;
+    qtyInput.value = 1;
 
     const totalBox = document.getElementById('order-total');
 
-    function updateTotal() {
-        const qty = Number(qtyInput.value) || 1;
-        const total = qty * Number(price);
-        totalBox.innerText = "Total: Rp " + total.toLocaleString();
-    }
-
+    // Recalculate total on every keystroke/stepper click
+    const updateTotal = () => {
+        let qty = parseInt(qtyInput.value) || 1;
+        // Cap to stock in real-time; show toast if user typed too high
+        if (qty > stock) {
+            qty = stock;
+            qtyInput.value = stock;
+            showToast('Whoa, easy there!', `Only ${stock} item(s) left in stock.`, 'error', 3000);
+        }
+        if (qty < 1) { qty = 1; qtyInput.value = 1; }
+        totalBox.innerText = 'Total: Rp ' + (qty * Number(price)).toLocaleString('id-ID');
+    };
     updateTotal();
     qtyInput.oninput = updateTotal;
 
-    document.getElementById('order-address').onchange = e => {
-        localStorage.setItem('buyer_address', e.target.value);
-    };
+    // Pre-fill buyer name
+    const savedName = localStorage.getItem('buyer_name');
+    if (savedName) document.getElementById('buyer-name').value = savedName;
 
-    contact = contact.replace(/\D/g, '');
-    if (contact.startsWith('0')) {
-        contact = '62' + contact.slice(1);
+    // Pre-fill & show buyer phone (read-only display)
+    const savedPhone = localStorage.getItem('buyer_phone') || '';
+    const phoneEl = document.getElementById('buyer-phone-display');
+    if (phoneEl) phoneEl.value = savedPhone;
+
+    // Pre-fill saved address
+    const savedAddr = localStorage.getItem('buyer_address');
+    if (savedAddr) document.getElementById('order-address').value = savedAddr;
+
+    initDeliveryMap();
+}
+
+async function submitOrder() {
+    if (!currentDbUser) return showToast('Hold on!', 'Set up your profile first via the ⚙️ icon.', 'error');
+    const { seller, food, price, contact, maxStock } = currentOrderContext;
+    const stock = parseInt(maxStock) || 99;
+
+    // Read qty fresh from the DOM — this is the single source of truth
+    let qty = parseInt(document.getElementById('order-qty').value);
+    if (!qty || qty < 1) qty = 1;
+    if (qty > stock) {
+        qty = stock;
+        document.getElementById('order-qty').value = stock;
+        showToast('Adjusted for you!', `Capped at ${stock} (max stock).`, 'default', 3000);
+    }
+    // Debug trace — visible in DevTools console
+    console.log('[submitOrder] qty:', qty, '| stock:', stock);
+
+    const total      = qty * Number(price);
+    const buyerName  = document.getElementById('buyer-name').value.trim();
+    const address    = document.getElementById('order-address').value.trim();
+    // Use the EXACT same string that is stored in localStorage
+    // so loadOrderHistory's .eq('buyer_name', ...) query always matches.
+    const buyerPhone = localStorage.getItem('buyer_phone') || '';
+    const storedName = localStorage.getItem('buyer_name') || buyerName;
+
+    if (!buyerName)  return showToast("What's your name?", 'We need your name so the seller knows who to deliver to.', 'error');
+    if (!address)    return showToast('Drop a pin or type your address!', "Sellers can't deliver to nowhere 😟", 'error');
+    if (currentDbUser.balance < total) {
+        return showToast('Not enough balance 💸', `You need Rp ${total.toLocaleString('id-ID')} but your wallet is short. Top up first!`, 'error');
     }
 
-    document.getElementById('whatsapp-link').onclick = async () => {
-        const qty = Number(qtyInput.value);
-        const address = document.getElementById('order-address').value;
-        const buyerName = document.getElementById('buyer-name').value;
-        const total = qty * Number(price);
+    const btn = document.getElementById('submit-order-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Placing order…'; }
 
-        if (currentDbUser.balance < total) {
-            return alert('Insufficient balance!');
-        }
+    // --- ESCROW: Deduct balance immediately on Place Order ---
+    const newBalance = currentDbUser.balance - total;
+    const { error: balErr } = await supabaseClient
+        .from('users')
+        .update({ balance: newBalance })
+        .eq('id', currentDbUser.id);
 
-        const newBalance = currentDbUser.balance - total;
-        await supabaseClient.from('users').update({ balance: newBalance }).eq('id', currentDbUser.id);
+    if (balErr) {
+        if (btn) { btn.disabled = false; btn.textContent = '🛵 Place Order'; }
+        return showToast('Payment failed', balErr.message, 'error');
+    }
+    currentDbUser.balance = newBalance;
+    loadBalance();
 
-        const { data: orderData, error: orderError } = await supabaseClient.from('orders').insert([{
-            user_id: currentDbUser.id,
-            request_id: currentRequestId,
-            buyer_name: buyerName,
-            buyer_address: address,
-            seller_name: seller,
-            food_name: food,
-            price: parseInt(price),
-            quantity: qty,
-            total: total,
-            contact: contact
-        }]).select();
+    // Normalise contact to international format
+    let cleanContact = (contact || '').replace(/\D/g, '');
+    if (cleanContact.startsWith('0')) cleanContact = '62' + cleanContact.slice(1);
 
-        if (!orderError) {
-            saveUserHabit(food, price, false);
-            await fetchUserProfile(); // Refresh balance after deduction
+    // buyer_name stored as the EXACT localStorage value (e.g. "Budi 5678")
+    // so history queries with .eq('buyer_name', storedName) always match.
+    const { error: orderErr } = await supabaseClient.from('orders').insert([{
+        request_id:    currentRequestId,
+        user_id:       currentDbUser.id,    // <-- Required for refund logic
+        buyer_name:    storedName,          // <-- exact match with history query
+        buyer_phone:   buyerPhone,          // <-- NEW: explicitly saved for refunds
+        buyer_address: address,
+        seller_name:   seller,
+        food_name:     food,
+        price:         parseInt(price),
+        quantity:      qty,                 // <-- user-selected qty
+        total:         total,               // <-- price * qty
+        contact:       cleanContact
+    }]);
 
-            const msg = `Hi ${seller} \nI would like to place an order:\nFood: ${food}\nQuantity: ${qty}\nPrice per item: Rp ${Number(price).toLocaleString()}\nTotal: Rp ${total.toLocaleString()}\n\nName: ${buyerName}\nAddress: ${address}\n\nPlease confirm the order. Thank you`;
-            const waLink = `https://wa.me/${contact}?text=${encodeURIComponent(msg)}`;
+    if (btn) { btn.disabled = false; btn.textContent = '🛵 Place Order'; }
 
-            closeModal();
-            window.open(waLink, '_blank');
-        } else {
-            alert("Order failed: " + orderError.message);
-        }
+    if (!orderErr) {
+        saveUserHabit(food, price, false);
+        closeModal();
+        showToast('Order is live! 🎉', `${food} ×${qty} from ${seller} — Rp ${total.toLocaleString('id-ID')}. Hang tight!`, 'buyer', 7000);
+        localStorage.setItem('buyer_address', address);
+    } else {
+        // If order insert failed, refund the balance
+        currentDbUser.balance += total;
+        await supabaseClient.from('users').update({ balance: currentDbUser.balance }).eq('id', currentDbUser.id);
+        loadBalance();
+        showToast('Something went wrong 😕', orderErr.message + ' (balance refunded)', 'error');
+    }
+}
+
+
+function statusBadge(status) {
+    const map = { 
+        'pending': ['⏳','Pending','bg-yellow-100 text-yellow-700'], 
+        'on process': ['🍳','On Process','bg-blue-100 text-blue-700'], 
+        'delivered': ['✅','Delivered','bg-green-100 text-green-700'],
+        'cancelled': ['🚫','Cancelled','bg-red-100 text-red-700']
     };
+    const [icon, label, cls] = map[status] || ['❓', status, 'bg-gray-100 text-gray-600'];
+    return `<span class="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${cls}">${icon} ${label}</span>`;
 }
 
 async function loadOrderHistory() {
     const listEl = document.getElementById('history-list');
     if (!listEl) return;
-
-    listEl.innerHTML = '<div class="text-center text-gray-500 py-4">Loading history...</div>';
-
+    listEl.innerHTML = '<div class="text-center text-gray-400 py-6"><div class="text-3xl">⏳</div><div class="mt-2 text-sm">Loading…</div></div>';
     try {
-        // --- DATA ISOLATION: filter by the logged-in user's database ID ---
-        // Falls back to buyer_name match if currentDbUser isn't loaded yet
-        let ordersQuery = supabaseClient
+        // buyer_name in the DB is the exact localStorage value (e.g. "Budi 5678").
+        // We try the stored name first, then fall back to a phone-suffix partial match
+        // to catch any rows written by older code variants.
+        const storedBuyerName = localStorage.getItem('buyer_name') || '';
+        const buyerPhone      = localStorage.getItem('buyer_phone') || '';
+        const phoneSuffix     = buyerPhone.slice(-4);
+
+        // Primary query: exact name match
+        let { data: orders } = await supabaseClient
             .from('orders')
             .select('*')
+            .eq('buyer_name', storedBuyerName)
             .order('created_at', { ascending: false });
 
-        if (currentDbUser && currentDbUser.id) {
-            ordersQuery = ordersQuery.eq('user_id', currentDbUser.id);
-        } else {
-            // Fallback: match by buyer_name (less precise, used before profile loads)
-            ordersQuery = ordersQuery.eq('buyer_name', localStorage.getItem('buyer_name') || '');
+        // Fallback: if nothing found and we have a phone suffix, try ilike match
+        // This catches rows written as "Name (5678)" by older code
+        if ((!orders || orders.length === 0) && phoneSuffix) {
+            const { data: fallback } = await supabaseClient
+                .from('orders')
+                .select('*')
+                .ilike('buyer_name', `%${phoneSuffix}%`)
+                .order('created_at', { ascending: false });
+            if (fallback && fallback.length > 0) orders = fallback;
         }
 
-        const { data: orders, error } = await ordersQuery;
-
-        // Top-up history is keyed per phone number for per-user isolation
-        const topupKey = `topup_history_${localStorage.getItem('buyer_phone')}`;
-        let topups = JSON.parse(localStorage.getItem(topupKey) || '[]');
+        // Top-up history from localStorage, keyed per phone
+        const topupKey = `topup_history_${buyerPhone}`;
+        const topups = JSON.parse(localStorage.getItem(topupKey) || '[]');
         let allHistory = [];
+        let totalSpend = 0;
 
-        if (orders) {
-            orders.forEach(o => {
-                allHistory.push({ type: 'buy', title: `Order: ${o.food_name}`, amount: o.total, date: new Date(o.created_at).getTime() });
-            });
-        }
-
-        topups.forEach(t => {
-            allHistory.push({ type: 'topup', title: 'Top Up Balance', amount: t.amount, date: t.date });
-        });
-
+        (orders || []).forEach(o => allHistory.push({ type: 'buy', order: o, date: new Date(o.created_at).getTime() }));
+        topups.forEach(t => allHistory.push({ type: 'topup', amount: t.amount, date: t.date }));
         allHistory.sort((a, b) => b.date - a.date);
 
         listEl.innerHTML = '';
-        let totalSpend = 0;
-
-        if (allHistory.length === 0) {
-            listEl.innerHTML = '<div class="text-center text-gray-400 mt-4 italic">No transactions yet.</div>';
+        if (!allHistory.length) {
+            listEl.innerHTML = '<div class="text-center text-gray-400 mt-8 italic"><div class="text-3xl mb-2">🛒</div>Nothing here yet. Go order something delicious!</div>';
             return;
         }
 
-        // GOPAY STYLE UI
         allHistory.forEach(item => {
             const el = document.createElement('div');
-            el.className = "p-3 border-b flex justify-between items-center hover:bg-gray-50 transition-colors";
+            el.className = 'p-4 rounded-2xl border border-gray-100 bg-white shadow-sm flex flex-col gap-2 hover:shadow-md transition-all';
 
             if (item.type === 'buy') {
-                totalSpend += item.amount;
+                const o = item.order;
+                totalSpend += (o.total || 0);
+                const dateStr = new Date(o.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' });
                 el.innerHTML = `
-                    <div class="flex items-center gap-3">
-                        <div class="bg-orange-100 p-2 rounded-full text-orange-500 w-10 h-10 flex items-center justify-center shadow-sm">
-                            <i class="fa-solid fa-utensils"></i>
+                    <div class="flex justify-between items-start">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-2xl bg-orange-50 flex items-center justify-center text-lg flex-shrink-0">🍽️</div>
+                            <div>
+                                <div class="font-bold text-sm text-gray-800">${o.food_name}</div>
+                                <div class="text-[10px] text-gray-400">${o.seller_name} • ${o.quantity} item${o.quantity > 1 ? 's' : ''} • ${dateStr}</div>
+                            </div>
                         </div>
-                        <div>
-                            <div class="font-bold text-gray-800 text-sm">${item.title}</div>
-                            <div class="text-[10px] text-gray-400">Payment successful</div>
+                        <div class="text-right flex-shrink-0 ml-2">
+                            <div class="font-bold text-red-500 text-sm">- Rp ${(o.total||0).toLocaleString('id-ID')}</div>
+                            <div class="mt-1">${statusBadge(o.status || 'pending')}</div>
                         </div>
                     </div>
-                    <div class="font-bold text-red-500 text-sm">- Rp ${item.amount.toLocaleString('id-ID')}</div>
-                `;
+                    ${(o.status === 'pending' || !o.status) ? `
+                    <div class="mt-3 flex justify-end">
+                        <button onclick="cancelOrder(${o.id})" class="px-4 py-1.5 rounded-xl text-xs font-bold text-red-500 bg-red-50 hover:bg-red-100 transition-all border border-red-100">
+                            <i class="fa-solid fa-ban"></i> Cancel Order
+                        </button>
+                    </div>` : ''}`;
             } else {
+                const dateStr = new Date(item.date).toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' });
                 el.innerHTML = `
-                    <div class="flex items-center gap-3">
-                        <div class="bg-green-100 p-2 rounded-full text-green-600 w-10 h-10 flex items-center justify-center shadow-sm">
-                            <i class="fa-solid fa-wallet"></i>
+                    <div class="flex justify-between items-center">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-2xl bg-green-50 flex items-center justify-center text-lg flex-shrink-0">💳</div>
+                            <div>
+                                <div class="font-bold text-sm text-gray-800">Top Up Balance</div>
+                                <div class="text-[10px] text-gray-400">${dateStr}</div>
+                            </div>
                         </div>
-                        <div>
-                            <div class="font-bold text-gray-800 text-sm">${item.title}</div>
-                            <div class="text-[10px] text-gray-400">Top Up successful</div>
-                        </div>
-                    </div>
-                    <div class="font-bold text-green-600 text-sm">+ Rp ${item.amount.toLocaleString('id-ID')}</div>
-                `;
+                        <div class="font-bold text-green-600 text-sm">+ Rp ${item.amount.toLocaleString('id-ID')}</div>
+                    </div>`;
             }
             listEl.appendChild(el);
         });
 
-        const totalSpendEl = document.getElementById('total-spend');
-        if (totalSpendEl) totalSpendEl.innerText = `Rp ${totalSpend.toLocaleString('id-ID')}`;
+        const totalEl = document.getElementById('total-spend');
+        if (totalEl) totalEl.innerText = `Rp ${totalSpend.toLocaleString('id-ID')}`;
 
     } catch (err) {
-        console.error("History error:", err);
-        listEl.innerHTML = '<div class="text-center text-red-500 mt-4">Failed to load history</div>';
+        console.error('loadOrderHistory error:', err);
+        listEl.innerHTML = '<div class="text-center text-red-400 mt-4">Couldn’t load history. Try again?</div>';
     }
+}
+
+async function cancelOrder(orderId) {
+    if (!confirm("Are you sure you want to cancel/reject this order?")) return;
+
+    // First fetch the order to get the total and buyer_phone
+    const { data: orderData, error: fetchErr } = await supabaseClient
+        .from('orders')
+        .select('total, buyer_phone, status')
+        .eq('id', orderId)
+        .single();
+
+    if (fetchErr || !orderData) {
+        return showToast('Cancel failed', 'Order not found or missing buyer info.', 'error');
+    }
+
+    if (orderData.status !== 'pending' && orderData.status) {
+        return showToast('Too late!', 'This order is already being processed or delivered.', 'error');
+    }
+
+    const btn = event?.currentTarget;
+    if (btn) { btn.disabled = true; btn.innerText = 'Cancelling...'; }
+
+    // Refund logic: MUST happen BEFORE setting status to cancelled
+    if (orderData.buyer_phone) {
+        // Fetch current user balance by phone
+        const { data: user, error: userErr } = await supabaseClient
+            .from('users')
+            .select('id, balance')
+            .eq('phone', orderData.buyer_phone)
+            .single();
+            
+        if (!userErr && user) {
+            const refundedBalance = parseInt(user.balance || 0) + parseInt(orderData.total || 0);
+            
+            // Increment the buyer's balance
+            const { error: refundErr } = await supabaseClient
+                .from('users')
+                .update({ balance: refundedBalance })
+                .eq('id', user.id);
+                
+            if (refundErr) {
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-ban"></i> Cancel/Reject'; }
+                return showToast('Refund failed', refundErr.message, 'error');
+            }
+            
+            // If currentDbUser is the one cancelling (Buyer), update local state
+            if (currentDbUser && currentDbUser.id === user.id) {
+                currentDbUser.balance = refundedBalance;
+                loadBalance();
+            }
+        }
+    }
+
+    // Now update status to cancelled
+    const { error: cancelErr } = await supabaseClient
+        .from('orders')
+        .update({ status: 'cancelled' })
+        .eq('id', orderId);
+
+    if (cancelErr) {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-ban"></i> Cancel/Reject'; }
+        return showToast('Cancel failed', cancelErr.message, 'error');
+    }
+
+    showToast('Order Cancelled 🚫', 'The money has been refunded to the buyer.', 'success');
+    
+    // Refresh the view depending on who cancelled
+    if (typeof isSellerPage !== 'undefined' && isSellerPage) {
+        loadSellerHistory();
+    } else {
+        loadOrderHistory();
+    }
+}
+
+/* ── SELLER NOTIFICATION COUNTER ── */
+let sellerNotifCount = 0;
+function incrementSellerNotif() {
+    sellerNotifCount++;
+    const badge = document.getElementById('new-order-badge');
+    if (!badge) return;
+    badge.classList.remove('hidden');
+    badge.innerHTML = `<i class="fa-solid fa-bell"></i> ${sellerNotifCount} New Order${sellerNotifCount > 1 ? 's' : ''}!`;
+}
+function clearSellerNotif() {
+    sellerNotifCount = 0;
+    const badge = document.getElementById('new-order-badge');
+    if (badge) badge.classList.add('hidden');
+}
+
+/* ── SELLER HISTORY / ACTIVE ORDERS ── */
+function openSellerHistory() {
+    const modal = document.getElementById('seller-history-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        loadSellerHistory();
+        clearSellerNotif(); // Clear badge when seller opens the dashboard
+    }
+}
+function closeSellerHistory() {
+    const modal = document.getElementById('seller-history-modal');
+    if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
+}
+
+async function loadSellerHistory() {
+    const listEl = document.getElementById('seller-history-list');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="text-center text-gray-400 py-6"><div class="text-3xl">📊</div><div class="mt-2 text-sm">Loading your orders…</div></div>';
+    const sellerName = localStorage.getItem('seller_name');
+    if (!sellerName) {
+        listEl.innerHTML = '<div class="text-center text-gray-400 mt-8">Set up your shop first via ⚙️</div>';
+        return;
+    }
+    try {
+        // Filter by seller_name (column that exists in the schema)
+        const { data: orders, error } = await supabaseClient
+            .from('orders')
+            .select('*')
+            .eq('seller_name', sellerName)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        const today = new Date().toDateString();
+        let todayEarnings = 0;
+        const active    = (orders || []).filter(o => (o.status || 'pending') !== 'delivered' && o.status !== 'cancelled');
+        const completed = (orders || []).filter(o => (o.status || 'pending') === 'delivered');
+        const cancelled = (orders || []).filter(o => o.status === 'cancelled');
+
+        listEl.innerHTML = '';
+
+        // ── ACTIVE ORDERS section ──
+        if (active.length > 0) {
+            const header = document.createElement('div');
+            header.className = 'text-xs font-bold uppercase tracking-wider text-teal-600 mb-2 mt-1 flex items-center gap-1';
+            header.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-red-400 animate-pulse"></span> Active Orders (${active.length})`;
+            listEl.appendChild(header);
+        }
+
+        active.forEach(o => {
+            if (new Date(o.created_at).toDateString() === today) todayEarnings += (o.total || 0);
+            const el = document.createElement('div');
+            el.className = 'p-4 rounded-2xl border-2 border-teal-100 bg-teal-50/40 shadow-sm mb-3';
+            el.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <div>
+                        <div class="font-bold text-sm text-gray-800">${o.food_name}</div>
+                        <div class="text-[11px] text-gray-500 mt-0.5">👤 ${o.buyer_name} • qty ${o.quantity}</div>
+                        <div class="text-[11px] text-gray-400">📍 ${o.buyer_address || 'No address given'}</div>
+                    </div>
+                    <div class="text-right flex-shrink-0 ml-2">
+                        <div class="font-bold text-teal-600 text-sm">+ Rp ${(o.total||0).toLocaleString('id-ID')}</div>
+                        <div class="mt-1">${statusBadge(o.status || 'pending')}</div>
+                    </div>
+                </div>
+                <div class="flex gap-2 mt-3">
+                    ${(o.status || 'pending') === 'pending' ? `
+                        <button onclick="cancelOrder(${o.id})"
+                            class="flex-[0.5] py-2 rounded-xl text-xs font-bold text-red-500 transition-all active:scale-95"
+                            style="background:rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2);">
+                            <i class="fa-solid fa-ban"></i> Reject
+                        </button>
+                        <button onclick="updateOrderStatus(${o.id}, 'on process')"
+                            class="flex-[1.5] py-2 rounded-xl text-xs font-bold transition-all active:scale-95"
+                            style="background:rgba(13,148,136,0.12);color:#0D9488;">
+                            🍳 Start Cooking
+                        </button>` : ''}
+                    <button onclick="updateOrderStatus(${o.id}, 'delivered')"
+                        class="flex-1 py-2 rounded-xl text-xs font-bold text-white transition-all active:scale-95"
+                        style="background:linear-gradient(135deg,#0D9488,#14B8A6);box-shadow:0 4px 12px rgba(13,148,136,0.3);">
+                        🛵 Mark as Delivered
+                    </button>
+                </div>`;
+            listEl.appendChild(el);
+        });
+
+        // ── COMPLETED section ──
+        if (completed.length > 0) {
+            const divider = document.createElement('div');
+            divider.className = 'text-xs font-bold uppercase tracking-wider text-gray-400 mb-2 mt-4 flex items-center gap-1';
+            divider.innerHTML = `✅ Delivered (${completed.length})`;
+            listEl.appendChild(divider);
+        }
+
+        completed.forEach(o => {
+            if (new Date(o.created_at).toDateString() === today) todayEarnings += (o.total || 0);
+            const el = document.createElement('div');
+            el.className = 'p-3 rounded-2xl border border-gray-100 bg-white shadow-sm mb-2 opacity-70';
+            el.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <div>
+                        <div class="font-semibold text-sm text-gray-700">${o.food_name}</div>
+                        <div class="text-[10px] text-gray-400">${o.buyer_name} • qty ${o.quantity}</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="font-bold text-green-600 text-sm">+ Rp ${(o.total||0).toLocaleString('id-ID')}</div>
+                        <div class="mt-1">${statusBadge('delivered')}</div>
+                    </div>
+                </div>`;
+            listEl.appendChild(el);
+        });
+
+        // ── CANCELLED section ──
+        if (cancelled.length > 0) {
+            const divCancel = document.createElement('div');
+            divCancel.className = 'text-xs font-bold uppercase tracking-wider text-red-400 mb-2 mt-4 flex items-center gap-1';
+            divCancel.innerHTML = `🚫 Cancelled (${cancelled.length})`;
+            listEl.appendChild(divCancel);
+        }
+
+        cancelled.forEach(o => {
+            const el = document.createElement('div');
+            el.className = 'p-3 rounded-2xl border border-red-50 bg-red-50/30 shadow-sm mb-2 opacity-70';
+            el.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <div>
+                        <div class="font-semibold text-sm text-gray-700 line-through decoration-red-300">${o.food_name}</div>
+                        <div class="text-[10px] text-gray-400">${o.buyer_name} • qty ${o.quantity}</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="font-bold text-gray-400 text-sm">Rp ${(o.total||0).toLocaleString('id-ID')}</div>
+                        <div class="mt-1">${statusBadge('cancelled')}</div>
+                    </div>
+                </div>`;
+            listEl.appendChild(el);
+        });
+
+        if (!orders?.length) {
+            listEl.innerHTML = '<div class="text-center text-gray-400 mt-8 italic"><div class="text-3xl mb-2">👀</div>No orders yet. Offers are out there — keep going!</div>';
+        }
+
+        const totalEl = document.getElementById('seller-today-total');
+        if (totalEl) totalEl.innerText = `Rp ${todayEarnings.toLocaleString('id-ID')}`;
+    } catch(e) {
+        listEl.innerHTML = '<div class="text-center text-red-400 mt-4">Couldn’t load orders. Try again?</div>';
+    }
+}
+
+async function updateOrderStatus(orderId, newStatus) {
+    const { error } = await supabaseClient.from('orders').update({ status: newStatus }).eq('id', orderId);
+    if (!error) {
+        const msgs = {
+            'on process': ['Cooking time! 🍳', 'Order marked as On Process. The buyer knows you’re on it.'],
+            'delivered':  ['Delivered! 🚀', 'Nice work! Order is marked as delivered. Time to get paid.']
+        };
+        const [title, msg] = msgs[newStatus] || ['Updated!', `Status set to ${newStatus}.`];
+        showToast(title, msg, 'success', 5000);
+        loadSellerHistory();
+    } else {
+        showToast('Update failed 😕', error.message, 'error');
+    }
+}
+
+/* ── SUPABASE REALTIME: Listen for order updates ── */
+function initOrderRealtime() {
+    const isSeller = typeof isSellerPage !== 'undefined' && isSellerPage;
+    const sellerName = localStorage.getItem('seller_name');
+    const buyerPhone = localStorage.getItem('buyer_phone');
+    const storedBuyerName = localStorage.getItem('buyer_name');
+
+    if (!sellerName && !buyerPhone) return;
+
+    supabaseClient
+        .channel('order-updates')
+        .on('postgres_changes',
+            { event: '*', schema: 'public', table: 'orders' },
+            (payload) => {
+                const o = payload.new || payload.old;
+                
+                // Seller-side events
+                if (isSeller && o.seller_name === sellerName) {
+                    if (payload.eventType === 'INSERT') {
+                        incrementSellerNotif();
+                        showToast(
+                            '🛵 New Order Coming In!',
+                            `${o.food_name} ×${o.quantity} — ${o.buyer_name} just placed an order. Go get it!`,
+                            'seller',
+                            9000
+                        );
+                        if (document.getElementById('history-list')) loadSellerHistory();
+                    } else if (payload.eventType === 'UPDATE') {
+                        if (o.status === 'cancelled') {
+                            showToast('Order Cancelled 🚫', `${o.buyer_name} cancelled their order.`, 'error', 5000);
+                        }
+                        if (document.getElementById('history-list')) loadSellerHistory();
+                    }
+                } 
+                // Buyer-side events
+                else if (!isSeller && (o.buyer_phone === buyerPhone || o.buyer_name === storedBuyerName)) {
+                    if (payload.eventType === 'UPDATE') {
+                        if (o.status === 'on process') {
+                            showToast('Cooking time! 🍳', `${o.seller_name} is preparing your ${o.food_name}.`, 'buyer', 5000);
+                        } else if (o.status === 'delivered') {
+                            showToast('Delivered! 🚀', `Your ${o.food_name} has arrived!`, 'success', 5000);
+                        } else if (o.status === 'cancelled') {
+                            showToast('Order Rejected 🚫', `${o.seller_name} rejected your order. Money refunded.`, 'error', 5000);
+                            loadBalance(); // Refresh balance in header
+                        }
+                        if (document.getElementById('history-list')) loadOrderHistory();
+                    }
+                }
+            }
+        )
+        .subscribe();
 }
 
 function openTopupModal() {
@@ -1006,64 +1469,59 @@ function closeTopupModal() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    // Auto-login: if the user has already configured their profile, fetch their
-    // data from Supabase immediately so balance & history are ready without
-    // any manual action. Uses localStorage identity (not Supabase Auth).
-    const phone = isSellerPage
-        ? localStorage.getItem('seller_phone')
-        : localStorage.getItem('buyer_phone');
+    const phone = (typeof isSellerPage !== 'undefined' && isSellerPage) ? localStorage.getItem('seller_phone') : localStorage.getItem('buyer_phone');
+    if (phone) await fetchUserProfile();
 
-    if (phone) {
-        await fetchUserProfile();
-    }
+    initOrderRealtime();
 
     const UserInput = document.getElementById('user-input');
-    const sendBtn = document.getElementById('send-btn');
+    const sendBtn   = document.getElementById('send-btn');
     const chatAreaEl = document.getElementById('chat-area');
 
     if (UserInput && sendBtn) {
-        let isProcessing = false;
+        let processing = false;
         const handleSendClick = (e) => {
             if (e) e.preventDefault();
-            if (isProcessing) return;
+            if (processing) return;
             const val = UserInput.value.trim();
             if (!val) return;
-            isProcessing = true;
+            processing = true;
             UserInput.value = '';
-            addMessage(val, "user");
-
+            addMessage(val, 'user');
             if (typeof sendRequest === 'function') sendRequest(val);
-            setTimeout(() => { isProcessing = false; }, 500);
+            setTimeout(() => { processing = false; }, 500);
         };
         sendBtn.onclick = handleSendClick;
         UserInput.onkeydown = (e) => { if (e.key === 'Enter') handleSendClick(e); };
-
-        if (chatAreaEl && chatAreaEl.innerHTML.trim() === "") {
-            setTimeout(() => {
-                addMessage("Tell me what you're craving and watch sellers compete to give you the best offer!", "bot");
-            }, 300);
+        if (chatAreaEl && !chatAreaEl.innerHTML.trim()) {
+            setTimeout(() => addMessage("What are you craving? 🍱 Tell me and watch sellers compete!", 'bot'), 350);
         }
     }
 
-    const sellerRequestsListEl = document.getElementById('seller-requests');
-    if (sellerRequestsListEl) {
+    const sellerListEl = document.getElementById('seller-requests');
+    if (sellerListEl) {
         loadSellerRequests();
-        setInterval(() => {
-            loadSellerRequests();
-        }, 5000);
+        setInterval(loadSellerRequests, 5000);
     }
 });
 
 // BIND ALL GLOBALS
-window.openHistoryModal = openHistoryModal;
+window.openHistoryModal  = openHistoryModal;
 window.closeHistoryModal = closeHistoryModal;
-window.openOrder = openOrder;
-window.closeModal = closeModal;
-window.chooseAddress = chooseAddress;
-window.openTopupModal = openTopupModal;
-window.closeTopupModal = closeTopupModal;
-window.openConfig = openConfig;
-window.saveConfig = saveConfig;
-window.submitTopup = submitTopup;
-window.submitOffer = submitOffer;
-window.handleSend = handleSend;
+window.openOrder         = openOrder;
+window.closeModal        = closeModal;
+window.chooseAddress     = chooseAddress;
+window.openTopupModal    = openTopupModal;
+window.closeTopupModal   = closeTopupModal;
+window.openConfig        = openConfig;
+window.saveConfig        = saveConfig;
+window.submitTopup       = submitTopup;
+window.submitOffer       = submitOffer;
+window.submitOrder       = submitOrder;
+window.handleSend        = handleSend;
+window.changeQty         = changeQty;
+window.locateMeOnMap     = locateMeOnMap;
+window.openSellerHistory  = openSellerHistory;
+window.closeSellerHistory = closeSellerHistory;
+window.updateOrderStatus  = updateOrderStatus;
+window.showToast          = showToast;
