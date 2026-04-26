@@ -178,7 +178,7 @@ function initDeliveryMap() {
             const d = await res.json();
             const addrEl = document.getElementById('order-address');
             if (addrEl) addrEl.value = d.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-        } catch(_) {}
+        } catch (_) { }
     });
 
     deliveryMap.on('click', (e) => {
@@ -206,7 +206,7 @@ async function locateMeOnMap() {
             const addrEl = document.getElementById('order-address');
             if (addrEl) addrEl.value = d.display_name;
             localStorage.setItem('buyer_address', d.display_name);
-        } catch(_) {}
+        } catch (_) { }
         showToast('Location pinned!', 'Drag the marker to adjust.', 'success');
     }, () => showToast('Permission denied', 'Enable location access.', 'error'));
 }
@@ -265,7 +265,7 @@ async function chooseAddress() {
  */
 async function fetchUserProfile() {
     const phone = isSellerPage ? localStorage.getItem('seller_phone') : localStorage.getItem('buyer_phone');
-    const name  = isSellerPage ? localStorage.getItem('seller_name')  : localStorage.getItem('buyer_name');
+    const name = isSellerPage ? localStorage.getItem('seller_name') : localStorage.getItem('buyer_name');
     if (!phone) return;
 
     try {
@@ -619,7 +619,12 @@ function renderAuction(offers) {
         let extraClass = '';
         let badgeHTML = '';
 
-        if (isCheapest && isBestValue) {
+        const stock = offer.stock !== undefined ? parseInt(offer.stock) : 99;
+        const isSoldOut = stock <= 0;
+
+        if (isSoldOut) {
+            badgeHTML = `<span style="display:inline-flex;align-items:center;gap:4px;background:#ef4444;color:white;font-size:10px;font-weight:800;padding:3px 10px;border-radius:999px;margin-top:4px;">🚫 SOLD OUT</span>`;
+        } else if (isCheapest && isBestValue) {
             extraClass = 'cheapest-pulse';
             badgeHTML = `<span class="badge-value">⭐ Best Value + Cheapest!</span>`;
         } else if (isCheapest) {
@@ -656,10 +661,10 @@ function renderAuction(offers) {
                 <div class="text-right flex flex-col items-end gap-2 flex-shrink-0">
                     <div class="font-bold text-lg" style="color:#FF7A00;">Rp ${price.toLocaleString('id-ID')}</div>
                     <button
-                        onclick="openOrder('${offer.seller_name}','${offer.food_name.replace(/'/g,"\\'")}','${offer.price}','${offer.contact}','${offer.stock || 99}')"
-                        class="text-white text-xs px-5 py-2 rounded-2xl font-bold active:scale-95 transition-all shadow-md"
-                        style="background:linear-gradient(135deg,#FF7A00,#FF9A3C);box-shadow:0 4px 14px rgba(255,122,0,0.4);">
-                        Choose
+                        ${isSoldOut ? 'disabled' : `onclick="openOrder('${offer.seller_name}','${offer.food_name.replace(/'/g, "\\'").replace(/"/g, '&quot;')}','${offer.price}','${offer.contact}','${stock}', ${offer.id})"`}
+                        class="text-white text-xs px-5 py-2 rounded-2xl font-bold transition-all shadow-md ${isSoldOut ? 'bg-gray-400 cursor-not-allowed opacity-70' : 'active:scale-95'}"
+                        style="${isSoldOut ? '' : 'background:linear-gradient(135deg,#FF7A00,#FF9A3C);box-shadow:0 4px 14px rgba(255,122,0,0.4);'}">
+                        ${isSoldOut ? 'Sold Out' : 'Choose'}
                     </button>
                 </div>
             </div>
@@ -906,8 +911,8 @@ function closeHistoryModal() {
     document.body.classList.remove("modal-open");
 }
 
-function openOrder(seller, food, price, contact, maxStock) {
-    currentOrderContext = { seller, food, price, contact, maxStock };
+function openOrder(seller, food, price, contact, maxStock, offerId) {
+    currentOrderContext = { seller, food, price, contact, maxStock, offerId };
     const modal = document.getElementById('order-modal');
     if (!modal) return;
     modal.classList.remove('hidden');
@@ -972,16 +977,16 @@ async function submitOrder() {
     // Debug trace — visible in DevTools console
     console.log('[submitOrder] qty:', qty, '| stock:', stock);
 
-    const total      = qty * Number(price);
-    const buyerName  = document.getElementById('buyer-name').value.trim();
-    const address    = document.getElementById('order-address').value.trim();
+    const total = qty * Number(price);
+    const buyerName = document.getElementById('buyer-name').value.trim();
+    const address = document.getElementById('order-address').value.trim();
     // Use the EXACT same string that is stored in localStorage
     // so loadOrderHistory's .eq('buyer_name', ...) query always matches.
     const buyerPhone = localStorage.getItem('buyer_phone') || '';
     const storedName = localStorage.getItem('buyer_name') || buyerName;
 
-    if (!buyerName)  return showToast("What's your name?", 'We need your name so the seller knows who to deliver to.', 'error');
-    if (!address)    return showToast('Drop a pin or type your address!', "Sellers can't deliver to nowhere 😟", 'error');
+    if (!buyerName) return showToast("What's your name?", 'We need your name so the seller knows who to deliver to.', 'error');
+    if (!address) return showToast('Drop a pin or type your address!', "Sellers can't deliver to nowhere 😟", 'error');
     if (currentDbUser.balance < total) {
         return showToast('Not enough balance 💸', `You need Rp ${total.toLocaleString('id-ID')} but your wallet is short. Top up first!`, 'error');
     }
@@ -1010,20 +1015,26 @@ async function submitOrder() {
     // buyer_name stored as the EXACT localStorage value (e.g. "Budi 5678")
     // so history queries with .eq('buyer_name', storedName) always match.
     const { error: orderErr } = await supabaseClient.from('orders').insert([{
-        request_id:    currentRequestId,
-        user_id:       currentDbUser.id,    // <-- Required for refund logic
-        buyer_name:    storedName,          // <-- exact match with history query
-        buyer_phone:   buyerPhone,          // <-- NEW: explicitly saved for refunds
+        request_id: currentRequestId,
+        user_id: currentDbUser.id,    // <-- Required for refund logic
+        buyer_name: storedName,          // <-- exact match with history query
+        buyer_phone: buyerPhone,          // <-- NEW: explicitly saved for refunds
         buyer_address: address,
-        seller_name:   seller,
-        food_name:     food,
-        price:         parseInt(price),
-        quantity:      qty,                 // <-- user-selected qty
-        total:         total,               // <-- price * qty
-        contact:       cleanContact
+        seller_name: seller,
+        food_name: food,
+        price: parseInt(price),
+        quantity: qty,                 // <-- user-selected qty
+        total: total,               // <-- price * qty
+        contact: cleanContact
     }]);
 
     if (btn) { btn.disabled = false; btn.textContent = '🛵 Place Order'; }
+
+    if (!orderErr && currentOrderContext.offerId) {
+        // Decrement stock
+        const newStock = Math.max(0, stock - qty);
+        await supabaseClient.from('offers').update({ stock: newStock }).eq('id', currentOrderContext.offerId);
+    }
 
     if (!orderErr) {
         saveUserHabit(food, price, false);
@@ -1041,11 +1052,11 @@ async function submitOrder() {
 
 
 function statusBadge(status) {
-    const map = { 
-        'pending': ['⏳','Pending','bg-yellow-100 text-yellow-700'], 
-        'on process': ['🍳','On Process','bg-blue-100 text-blue-700'], 
-        'delivered': ['✅','Delivered','bg-green-100 text-green-700'],
-        'cancelled': ['🚫','Cancelled','bg-red-100 text-red-700']
+    const map = {
+        'pending': ['⏳', 'Pending', 'bg-yellow-100 text-yellow-700'],
+        'on process': ['🍳', 'On Process', 'bg-blue-100 text-blue-700'],
+        'delivered': ['✅', 'Delivered', 'bg-green-100 text-green-700'],
+        'cancelled': ['🚫', 'Cancelled', 'bg-red-100 text-red-700']
     };
     const [icon, label, cls] = map[status] || ['❓', status, 'bg-gray-100 text-gray-600'];
     return `<span class="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${cls}">${icon} ${label}</span>`;
@@ -1060,8 +1071,8 @@ async function loadOrderHistory() {
         // We try the stored name first, then fall back to a phone-suffix partial match
         // to catch any rows written by older code variants.
         const storedBuyerName = localStorage.getItem('buyer_name') || '';
-        const buyerPhone      = localStorage.getItem('buyer_phone') || '';
-        const phoneSuffix     = buyerPhone.slice(-4);
+        const buyerPhone = localStorage.getItem('buyer_phone') || '';
+        const phoneSuffix = buyerPhone.slice(-4);
 
         // Primary query: exact name match
         let { data: orders } = await supabaseClient
@@ -1103,8 +1114,10 @@ async function loadOrderHistory() {
 
             if (item.type === 'buy') {
                 const o = item.order;
-                totalSpend += (o.total || 0);
-                const dateStr = new Date(o.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' });
+                if (o.status !== 'cancelled') {
+                    totalSpend += (o.total || 0);
+                }
+                const dateStr = new Date(o.created_at).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
                 el.innerHTML = `
                     <div class="flex justify-between items-start">
                         <div class="flex items-center gap-3">
@@ -1115,7 +1128,7 @@ async function loadOrderHistory() {
                             </div>
                         </div>
                         <div class="text-right flex-shrink-0 ml-2">
-                            <div class="font-bold text-red-500 text-sm">- Rp ${(o.total||0).toLocaleString('id-ID')}</div>
+                            <div class="font-bold text-red-500 text-sm">- Rp ${(o.total || 0).toLocaleString('id-ID')}</div>
                             <div class="mt-1">${statusBadge(o.status || 'pending')}</div>
                         </div>
                     </div>
@@ -1126,7 +1139,7 @@ async function loadOrderHistory() {
                         </button>
                     </div>` : ''}`;
             } else {
-                const dateStr = new Date(item.date).toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' });
+                const dateStr = new Date(item.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
                 el.innerHTML = `
                     <div class="flex justify-between items-center">
                         <div class="flex items-center gap-3">
@@ -1157,7 +1170,7 @@ async function cancelOrder(orderId) {
     // First fetch the order to get the total and buyer_phone
     const { data: orderData, error: fetchErr } = await supabaseClient
         .from('orders')
-        .select('total, buyer_phone, status')
+        .select('total, buyer_phone, status, quantity, request_id, seller_name, food_name')
         .eq('id', orderId)
         .single();
 
@@ -1180,21 +1193,21 @@ async function cancelOrder(orderId) {
             .select('id, balance')
             .eq('phone', orderData.buyer_phone)
             .single();
-            
+
         if (!userErr && user) {
             const refundedBalance = parseInt(user.balance || 0) + parseInt(orderData.total || 0);
-            
+
             // Increment the buyer's balance
             const { error: refundErr } = await supabaseClient
                 .from('users')
                 .update({ balance: refundedBalance })
                 .eq('id', user.id);
-                
+
             if (refundErr) {
                 if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-ban"></i> Cancel/Reject'; }
                 return showToast('Refund failed', refundErr.message, 'error');
             }
-            
+
             // If currentDbUser is the one cancelling (Buyer), update local state
             if (currentDbUser && currentDbUser.id === user.id) {
                 currentDbUser.balance = refundedBalance;
@@ -1214,8 +1227,24 @@ async function cancelOrder(orderId) {
         return showToast('Cancel failed', cancelErr.message, 'error');
     }
 
+    // Refund Stock
+    if (orderData.request_id && orderData.seller_name && orderData.food_name) {
+        const { data: offerData } = await supabaseClient
+            .from('offers')
+            .select('id, stock')
+            .eq('request_id', orderData.request_id)
+            .eq('seller_name', orderData.seller_name)
+            .eq('food_name', orderData.food_name)
+            .single();
+
+        if (offerData) {
+            const restoredStock = (offerData.stock || 0) + (orderData.quantity || 1);
+            await supabaseClient.from('offers').update({ stock: restoredStock }).eq('id', offerData.id);
+        }
+    }
+
     showToast('Order Cancelled 🚫', 'The money has been refunded to the buyer.', 'success');
-    
+
     // Refresh the view depending on who cancelled
     if (typeof isSellerPage !== 'undefined' && isSellerPage) {
         loadSellerHistory();
@@ -1275,7 +1304,7 @@ async function loadSellerHistory() {
 
         const today = new Date().toDateString();
         let todayEarnings = 0;
-        const active    = (orders || []).filter(o => (o.status || 'pending') !== 'delivered' && o.status !== 'cancelled');
+        const active = (orders || []).filter(o => (o.status || 'pending') !== 'delivered' && o.status !== 'cancelled');
         const completed = (orders || []).filter(o => (o.status || 'pending') === 'delivered');
         const cancelled = (orders || []).filter(o => o.status === 'cancelled');
 
@@ -1301,7 +1330,7 @@ async function loadSellerHistory() {
                         <div class="text-[11px] text-gray-400">📍 ${o.buyer_address || 'No address given'}</div>
                     </div>
                     <div class="text-right flex-shrink-0 ml-2">
-                        <div class="font-bold text-teal-600 text-sm">+ Rp ${(o.total||0).toLocaleString('id-ID')}</div>
+                        <div class="font-bold text-teal-600 text-sm">+ Rp ${(o.total || 0).toLocaleString('id-ID')}</div>
                         <div class="mt-1">${statusBadge(o.status || 'pending')}</div>
                     </div>
                 </div>
@@ -1345,7 +1374,7 @@ async function loadSellerHistory() {
                         <div class="text-[10px] text-gray-400">${o.buyer_name} • qty ${o.quantity}</div>
                     </div>
                     <div class="text-right">
-                        <div class="font-bold text-green-600 text-sm">+ Rp ${(o.total||0).toLocaleString('id-ID')}</div>
+                        <div class="font-bold text-green-600 text-sm">+ Rp ${(o.total || 0).toLocaleString('id-ID')}</div>
                         <div class="mt-1">${statusBadge('delivered')}</div>
                     </div>
                 </div>`;
@@ -1370,7 +1399,7 @@ async function loadSellerHistory() {
                         <div class="text-[10px] text-gray-400">${o.buyer_name} • qty ${o.quantity}</div>
                     </div>
                     <div class="text-right">
-                        <div class="font-bold text-gray-400 text-sm">Rp ${(o.total||0).toLocaleString('id-ID')}</div>
+                        <div class="font-bold text-gray-400 text-sm">Rp ${(o.total || 0).toLocaleString('id-ID')}</div>
                         <div class="mt-1">${statusBadge('cancelled')}</div>
                     </div>
                 </div>`;
@@ -1383,7 +1412,7 @@ async function loadSellerHistory() {
 
         const totalEl = document.getElementById('seller-today-total');
         if (totalEl) totalEl.innerText = `Rp ${todayEarnings.toLocaleString('id-ID')}`;
-    } catch(e) {
+    } catch (e) {
         listEl.innerHTML = '<div class="text-center text-red-400 mt-4">Couldn’t load orders. Try again?</div>';
     }
 }
@@ -1393,7 +1422,7 @@ async function updateOrderStatus(orderId, newStatus) {
     if (!error) {
         const msgs = {
             'on process': ['Cooking time! 🍳', 'Order marked as On Process. The buyer knows you’re on it.'],
-            'delivered':  ['Delivered! 🚀', 'Nice work! Order is marked as delivered. Time to get paid.']
+            'delivered': ['Delivered! 🚀', 'Nice work! Order is marked as delivered. Time to get paid.']
         };
         const [title, msg] = msgs[newStatus] || ['Updated!', `Status set to ${newStatus}.`];
         showToast(title, msg, 'success', 5000);
@@ -1418,7 +1447,7 @@ function initOrderRealtime() {
             { event: '*', schema: 'public', table: 'orders' },
             (payload) => {
                 const o = payload.new || payload.old;
-                
+
                 // Seller-side events
                 if (isSeller && o.seller_name === sellerName) {
                     if (payload.eventType === 'INSERT') {
@@ -1436,7 +1465,7 @@ function initOrderRealtime() {
                         }
                         if (document.getElementById('history-list')) loadSellerHistory();
                     }
-                } 
+                }
                 // Buyer-side events
                 else if (!isSeller && (o.buyer_phone === buyerPhone || o.buyer_name === storedBuyerName)) {
                     if (payload.eventType === 'UPDATE') {
@@ -1475,7 +1504,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initOrderRealtime();
 
     const UserInput = document.getElementById('user-input');
-    const sendBtn   = document.getElementById('send-btn');
+    const sendBtn = document.getElementById('send-btn');
     const chatAreaEl = document.getElementById('chat-area');
 
     if (UserInput && sendBtn) {
@@ -1494,7 +1523,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         sendBtn.onclick = handleSendClick;
         UserInput.onkeydown = (e) => { if (e.key === 'Enter') handleSendClick(e); };
         if (chatAreaEl && !chatAreaEl.innerHTML.trim()) {
-            setTimeout(() => addMessage("What are you craving? 🍱 Tell me and watch sellers compete!", 'bot'), 350);
+            setTimeout(() => addMessage("What are you craving? 😋 Tell me and watch sellers compete!", 'bot'), 350);
         }
     }
 
@@ -1506,22 +1535,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 // BIND ALL GLOBALS
-window.openHistoryModal  = openHistoryModal;
+window.openHistoryModal = openHistoryModal;
 window.closeHistoryModal = closeHistoryModal;
-window.openOrder         = openOrder;
-window.closeModal        = closeModal;
-window.chooseAddress     = chooseAddress;
-window.openTopupModal    = openTopupModal;
-window.closeTopupModal   = closeTopupModal;
-window.openConfig        = openConfig;
-window.saveConfig        = saveConfig;
-window.submitTopup       = submitTopup;
-window.submitOffer       = submitOffer;
-window.submitOrder       = submitOrder;
-window.handleSend        = handleSend;
-window.changeQty         = changeQty;
-window.locateMeOnMap     = locateMeOnMap;
-window.openSellerHistory  = openSellerHistory;
+window.openOrder = openOrder;
+window.closeModal = closeModal;
+window.chooseAddress = chooseAddress;
+window.openTopupModal = openTopupModal;
+window.closeTopupModal = closeTopupModal;
+window.openConfig = openConfig;
+window.saveConfig = saveConfig;
+window.submitTopup = submitTopup;
+window.submitOffer = submitOffer;
+window.submitOrder = submitOrder;
+window.handleSend = handleSend;
+window.changeQty = changeQty;
+window.locateMeOnMap = locateMeOnMap;
+window.openSellerHistory = openSellerHistory;
 window.closeSellerHistory = closeSellerHistory;
-window.updateOrderStatus  = updateOrderStatus;
-window.showToast          = showToast;
+window.updateOrderStatus = updateOrderStatus;
+window.showToast = showToast;
