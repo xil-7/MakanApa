@@ -26,12 +26,12 @@ function checkProfile() {
 
 function updateGatekeeperUI() {
     const profileSet = isProfileSet();
-    
+
     // Buyer UI lock
     if (!isSellerPage) {
         const sendBtn = document.getElementById('send-btn');
         const userInput = document.getElementById('user-input');
-        
+
         if (sendBtn) {
             if (!profileSet) {
                 sendBtn.style.opacity = '0.5';
@@ -43,7 +43,7 @@ function updateGatekeeperUI() {
                 sendBtn.classList.add('hover:scale-105', 'active:scale-95');
             }
         }
-        
+
         if (userInput) {
             if (!profileSet) {
                 userInput.placeholder = "Profile Setup Required. Click ⚙️ to set up.";
@@ -145,16 +145,16 @@ const userInput = document.getElementById('user-input');
 /* ── SFX SYSTEM ── */
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-window.playSound = function(type) {
+window.playSound = function (type) {
     if (audioCtx.state === 'suspended') audioCtx.resume();
     const osc = audioCtx.createOscillator();
     const gainNode = audioCtx.createGain();
-    
+
     osc.connect(gainNode);
     gainNode.connect(audioCtx.destination);
-    
+
     const now = audioCtx.currentTime;
-    
+
     if (type === 'click') {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(600, now);
@@ -1675,7 +1675,7 @@ window.closeSellerHistory = closeSellerHistory;
 /* ── SELLER MENU DRAFTS ── */
 let menuDrafts = [];
 
-window.openMenuDraftsModal = function() {
+window.openMenuDraftsModal = function () {
     window.playSound('click');
     const modal = document.getElementById('drafts-modal');
     if (modal) {
@@ -1685,7 +1685,7 @@ window.openMenuDraftsModal = function() {
     }
 };
 
-window.closeMenuDraftsModal = function() {
+window.closeMenuDraftsModal = function () {
     window.playSound('click');
     const modal = document.getElementById('drafts-modal');
     if (modal) {
@@ -1694,7 +1694,7 @@ window.closeMenuDraftsModal = function() {
     }
 };
 
-window.loadMenuDrafts = async function() {
+window.loadMenuDrafts = async function () {
     const listEl = document.getElementById('drafts-list');
     if (!listEl) return;
     const sellerPhone = localStorage.getItem('seller_phone');
@@ -1702,25 +1702,25 @@ window.loadMenuDrafts = async function() {
         listEl.innerHTML = '<div class="text-center text-gray-400 py-4 text-xs italic">Set up your profile first.</div>';
         return;
     }
-    
+
     listEl.innerHTML = '<div class="text-center text-gray-400 py-4 text-xs italic animate-pulse">Loading drafts...</div>';
-    
+
     try {
         const { data, error } = await supabaseClient
             .from('seller_menus')
             .select('*')
             .eq('seller_phone', sellerPhone)
             .order('created_at', { ascending: false });
-            
+
         if (error) throw error;
-        
+
         menuDrafts = data || [];
-        
+
         if (menuDrafts.length === 0) {
             listEl.innerHTML = '<div class="text-center text-gray-400 py-4 text-xs italic">No drafts saved yet.</div>';
             return;
         }
-        
+
         listEl.innerHTML = menuDrafts.map(draft => `
             <div class="flex justify-between items-center p-3 border border-gray-100 rounded-lg bg-white shadow-sm">
                 <div>
@@ -1732,36 +1732,36 @@ window.loadMenuDrafts = async function() {
                 </button>
             </div>
         `).join('');
-        
+
     } catch (e) {
         console.error("Error loading drafts:", e);
         listEl.innerHTML = '<div class="text-center text-red-400 py-4 text-xs italic">Failed to load drafts.</div>';
     }
 };
 
-window.saveMenuDraft = async function(foodName = null, price = null, silent = false) {
+window.saveMenuDraft = async function (foodName = null, price = null, silent = false) {
     if (!silent) window.playSound('click');
     const sellerPhone = localStorage.getItem('seller_phone');
     if (!sellerPhone) return alert("Please set up your profile first.");
-    
+
     // Support being called programmatically (AI) or from DOM
     const fName = (typeof foodName === 'string') ? foodName : document.getElementById('draft-name').value.trim();
     const fPrice = (typeof price === 'number' || typeof price === 'string') ? price : document.getElementById('draft-price').value.trim();
-    
+
     if (!fName || !fPrice) {
         if (!silent) showToast("Missing Info", "Please enter food name and price.", "error");
         return;
     }
-    
+
     try {
         const { error } = await supabaseClient.from('seller_menus').insert([{
             seller_phone: sellerPhone,
             food_name: fName,
             price: parseInt(fPrice)
         }]);
-        
+
         if (error) throw error;
-        
+
         if (!silent) {
             showToast("Draft Saved", `${fName} added to your drafts.`, "success");
             document.getElementById('draft-name').value = '';
@@ -1774,10 +1774,10 @@ window.saveMenuDraft = async function(foodName = null, price = null, silent = fa
     }
 };
 
-window.deleteMenuDraft = async function(id) {
+window.deleteMenuDraft = async function (id) {
     window.playSound('click');
     if (!confirm("Delete this draft?")) return;
-    
+
     try {
         const { error } = await supabaseClient.from('seller_menus').delete().eq('id', id);
         if (error) throw error;
@@ -1789,72 +1789,80 @@ window.deleteMenuDraft = async function(id) {
     }
 };
 
-window.processAIMenu = async function(input) {
+window.processAIMenu = async function (input) {
     if (!input.files || !input.files[0]) return;
     window.playSound('click');
-    
+
     const loadingEl = document.getElementById('ai-loading');
     loadingEl.classList.remove('hidden');
-    
+
     try {
         const file = input.files[0];
-        
+
         const reader = new FileReader();
         reader.onload = async (e) => {
             const dataUrl = e.target.result;
-            
+
             try {
                 if (typeof Tesseract === 'undefined') {
                     throw new Error("Tesseract.js not loaded.");
                 }
-                
+
                 const result = await Tesseract.recognize(dataUrl, 'ind+eng', {
                     logger: m => console.log(m)
                 });
-                
+
                 const text = result.data.text;
                 console.log("OCR Result:\n", text);
-                
+
                 const lines = text.split('\n').filter(l => l.trim().length > 0);
                 let foundItems = 0;
-                
-                const regex = /^([a-zA-Z\s]+)[\sRp.-]*(\d+[kK]?(?:\.\d+)?)/i;
+
+                const regex = /^([a-zA-Z\s&]+)[\sRp=:-]*(\d+[kK]?(?:[.,]\d+)?)/i;
                 
                 for (let line of lines) {
                     const match = line.match(regex);
                     if (match && match[1].trim().length > 2) {
                         let fName = match[1].trim();
                         let fPriceStr = match[2].toLowerCase();
-                        let fPrice = parseInt(fPriceStr.replace(/\./g, ''));
+                        
+                        // Parse numbers, stripping out dots and commas if they represent thousands
+                        // e.g., 15.000 -> 15000, 15,000 -> 15000
+                        let cleanPriceStr = fPriceStr.replace(/[.,]/g, '');
+                        let fPrice = parseInt(cleanPriceStr);
                         
                         if (fPriceStr.includes('k')) {
+                            // parseInt('15k') -> 15
                             fPrice = parseInt(fPriceStr) * 1000;
+                        } else if (fPrice > 0 && fPrice <= 200) {
+                            // If menu says "5" meaning 5,000, or "15" meaning 15,000
+                            fPrice = fPrice * 1000;
                         }
                         
-                        if (fPrice > 100) {
+                        if (fPrice >= 500) {
                             await window.saveMenuDraft(fName, fPrice, true);
                             foundItems++;
                         }
                     }
                 }
-                
+
                 if (foundItems > 0) {
                     showToast("AI Extraction Success", `Found and imported ${foundItems} items!`, "success");
                     window.loadMenuDrafts();
                 } else {
                     showToast("AI Extraction Failed", "Could not find clear Food Name and Price pairs in the image.", "error");
                 }
-                
+
             } catch (err) {
                 console.error("Tesseract Error:", err);
                 showToast("OCR Failed", err.message, "error");
             } finally {
                 loadingEl.classList.add('hidden');
-                input.value = ''; 
+                input.value = '';
             }
         };
         reader.readAsDataURL(file);
-        
+
     } catch (err) {
         console.error("AI Menu Error:", err);
         loadingEl.classList.add('hidden');
@@ -1862,12 +1870,12 @@ window.processAIMenu = async function(input) {
     }
 };
 
-window.applyMenuDraft = function(selectEl, reqId) {
+window.applyMenuDraft = function (selectEl, reqId) {
     if (!selectEl.value) return;
     const [name, price] = selectEl.value.split('|');
     const nameInput = document.getElementById(`offer-name-${reqId}`);
     const priceInput = document.getElementById(`offer-price-${reqId}`);
-    
+
     if (nameInput) nameInput.value = name;
     if (priceInput) {
         priceInput.value = price;
