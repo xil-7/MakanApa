@@ -77,6 +77,7 @@ function openConfig() {
 }
 
 async function saveConfig() {
+    window.playSound('click');
     const nameInput = document.getElementById('auth-name');
     const phoneInput = document.getElementById('auth-phone');
     let name = nameInput ? nameInput.value.trim() : '';
@@ -141,8 +142,63 @@ let currentOrderContext = {}; // seller/food/price/contact/stock for submitOrder
 const chatArea = document.getElementById('chat-area');
 const userInput = document.getElementById('user-input');
 
+/* ── SFX SYSTEM ── */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+window.playSound = function(type) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    
+    const now = audioCtx.currentTime;
+    
+    if (type === 'click') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(600, now);
+        osc.frequency.exponentialRampToValueAtTime(300, now + 0.1);
+        gainNode.gain.setValueAtTime(0.5, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+        osc.start(now);
+        osc.stop(now + 0.1);
+    } else if (type === 'notify') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.setValueAtTime(1108.73, now + 0.1);
+        gainNode.gain.setValueAtTime(0, now);
+        gainNode.gain.linearRampToValueAtTime(0.5, now + 0.05);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+        osc.start(now);
+        osc.stop(now + 0.5);
+    } else if (type === 'success') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.setValueAtTime(554.37, now + 0.1);
+        osc.frequency.setValueAtTime(659.25, now + 0.2);
+        gainNode.gain.setValueAtTime(0, now);
+        gainNode.gain.linearRampToValueAtTime(0.3, now + 0.05);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+        osc.start(now);
+        osc.stop(now + 0.6);
+    } else if (type === 'error') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, now);
+        osc.frequency.exponentialRampToValueAtTime(100, now + 0.2);
+        gainNode.gain.setValueAtTime(0.3, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+        osc.start(now);
+        osc.stop(now + 0.3);
+    }
+};
+
 /* ── TOAST SYSTEM ── */
 function showToast(title, message, type = 'default', duration = 4500) {
+    if (type === 'success') window.playSound('success');
+    else if (type === 'error') window.playSound('error');
+    else window.playSound('notify');
+
     const container = document.getElementById('toast-container');
     if (!container) return;
     const icons = { default: '🔔', success: '✅', error: '❌', buyer: '🛵', seller: '📦' };
@@ -339,6 +395,7 @@ async function fetchUserProfile() {
 const loadUserProfile = fetchUserProfile;
 
 async function submitTopup() {
+    window.playSound('click');
     const amountInput = document.getElementById('topup-amount');
     const amount = parseInt(amountInput.value);
 
@@ -478,6 +535,7 @@ window.handleAutoPrice = function (reqId) {
 }
 
 function openOrderModal() {
+    window.playSound('click');
     const saved = localStorage.getItem('buyer_address');
     if (saved) {
         document.getElementById('order-address').value = saved;
@@ -486,6 +544,7 @@ function openOrderModal() {
 }
 
 function closeModal() {
+    window.playSound('click');
     const modal = document.getElementById('order-modal');
     modal.classList.add('hidden');
     modal.classList.remove('flex');
@@ -776,6 +835,13 @@ async function loadSellerRequests() {
                 
                 <div class="bg-slate-50 p-3 rounded-lg border border-blue-50 text-sm">
                     
+                    <div class="flex gap-2 mb-2 ${menuDrafts.length === 0 ? 'hidden' : ''}">
+                        <select onchange="window.applyMenuDraft(this, ${req.id})" class="w-full p-2 rounded border text-xs bg-teal-50 text-teal-800 outline-none ${opacityCls}" ${disableAttr}>
+                            <option value="">✨ Choose from My Menu Drafts...</option>
+                            ${menuDrafts.map(d => `<option value="${d.food_name}|${d.price}">${d.food_name} - Rp ${parseInt(d.price).toLocaleString('id-ID')}</option>`).join('')}
+                        </select>
+                    </div>
+
                     <div class="flex gap-2 mb-2">
                         <input type="text" id="offer-name-${req.id}" 
                             placeholder="Ex: Nasi Goreng Special" 
@@ -825,6 +891,7 @@ async function loadSellerRequests() {
 }
 
 async function submitOffer(reqId) {
+    window.playSound('click');
     if (!checkProfile()) return;
 
     // 1. Ambil input yang MEMANG diketik seller (Menu & Harga)
@@ -955,6 +1022,7 @@ function closeHistoryModal() {
 }
 
 function openOrder(seller, food, price, contact, maxStock, offerId) {
+    window.playSound('click');
     currentOrderContext = { seller, food, price, contact, maxStock, offerId };
     const modal = document.getElementById('order-modal');
     if (!modal) return;
@@ -1005,6 +1073,7 @@ function openOrder(seller, food, price, contact, maxStock, offerId) {
 }
 
 async function submitOrder() {
+    window.playSound('click');
     if (!checkProfile()) return;
     if (!currentDbUser) return showToast('Hold on!', 'Set up your profile first via the ⚙️ icon.', 'error');
     const { seller, food, price, contact, maxStock } = currentOrderContext;
@@ -1209,6 +1278,7 @@ async function loadOrderHistory() {
 }
 
 async function cancelOrder(orderId) {
+    window.playSound('click');
     if (!confirm("Are you sure you want to cancel/reject this order?")) return;
 
     // First fetch the order to get the total and buyer_phone
@@ -1314,6 +1384,7 @@ function clearSellerNotif() {
 
 /* ── SELLER HISTORY / ACTIVE ORDERS ── */
 function openSellerHistory() {
+    window.playSound('click');
     const modal = document.getElementById('seller-history-modal');
     if (modal) {
         modal.classList.remove('hidden');
@@ -1323,6 +1394,7 @@ function openSellerHistory() {
     }
 }
 function closeSellerHistory() {
+    window.playSound('click');
     const modal = document.getElementById('seller-history-modal');
     if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
 }
@@ -1462,6 +1534,7 @@ async function loadSellerHistory() {
 }
 
 async function updateOrderStatus(orderId, newStatus) {
+    window.playSound('click');
     const { error } = await supabaseClient.from('orders').update({ status: newStatus }).eq('id', orderId);
     if (!error) {
         const msgs = {
@@ -1598,5 +1671,209 @@ window.changeQty = changeQty;
 window.locateMeOnMap = locateMeOnMap;
 window.openSellerHistory = openSellerHistory;
 window.closeSellerHistory = closeSellerHistory;
+
+/* ── SELLER MENU DRAFTS ── */
+let menuDrafts = [];
+
+window.openMenuDraftsModal = function() {
+    window.playSound('click');
+    const modal = document.getElementById('drafts-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        window.loadMenuDrafts();
+    }
+};
+
+window.closeMenuDraftsModal = function() {
+    window.playSound('click');
+    const modal = document.getElementById('drafts-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }
+};
+
+window.loadMenuDrafts = async function() {
+    const listEl = document.getElementById('drafts-list');
+    if (!listEl) return;
+    const sellerPhone = localStorage.getItem('seller_phone');
+    if (!sellerPhone) {
+        listEl.innerHTML = '<div class="text-center text-gray-400 py-4 text-xs italic">Set up your profile first.</div>';
+        return;
+    }
+    
+    listEl.innerHTML = '<div class="text-center text-gray-400 py-4 text-xs italic animate-pulse">Loading drafts...</div>';
+    
+    try {
+        const { data, error } = await supabaseClient
+            .from('seller_menus')
+            .select('*')
+            .eq('seller_phone', sellerPhone)
+            .order('created_at', { ascending: false });
+            
+        if (error) throw error;
+        
+        menuDrafts = data || [];
+        
+        if (menuDrafts.length === 0) {
+            listEl.innerHTML = '<div class="text-center text-gray-400 py-4 text-xs italic">No drafts saved yet.</div>';
+            return;
+        }
+        
+        listEl.innerHTML = menuDrafts.map(draft => `
+            <div class="flex justify-between items-center p-3 border border-gray-100 rounded-lg bg-white shadow-sm">
+                <div>
+                    <div class="font-bold text-gray-800 text-sm">${draft.food_name}</div>
+                    <div class="text-xs text-teal-600 font-semibold">Rp ${parseInt(draft.price).toLocaleString('id-ID')}</div>
+                </div>
+                <button onclick="deleteMenuDraft(${draft.id})" class="w-8 h-8 rounded-full bg-red-50 text-red-500 hover:bg-red-100 flex justify-center items-center transition-all shadow-sm">
+                    <i class="fa-solid fa-trash text-xs"></i>
+                </button>
+            </div>
+        `).join('');
+        
+    } catch (e) {
+        console.error("Error loading drafts:", e);
+        listEl.innerHTML = '<div class="text-center text-red-400 py-4 text-xs italic">Failed to load drafts.</div>';
+    }
+};
+
+window.saveMenuDraft = async function(foodName = null, price = null, silent = false) {
+    if (!silent) window.playSound('click');
+    const sellerPhone = localStorage.getItem('seller_phone');
+    if (!sellerPhone) return alert("Please set up your profile first.");
+    
+    // Support being called programmatically (AI) or from DOM
+    const fName = (typeof foodName === 'string') ? foodName : document.getElementById('draft-name').value.trim();
+    const fPrice = (typeof price === 'number' || typeof price === 'string') ? price : document.getElementById('draft-price').value.trim();
+    
+    if (!fName || !fPrice) {
+        if (!silent) showToast("Missing Info", "Please enter food name and price.", "error");
+        return;
+    }
+    
+    try {
+        const { error } = await supabaseClient.from('seller_menus').insert([{
+            seller_phone: sellerPhone,
+            food_name: fName,
+            price: parseInt(fPrice)
+        }]);
+        
+        if (error) throw error;
+        
+        if (!silent) {
+            showToast("Draft Saved", `${fName} added to your drafts.`, "success");
+            document.getElementById('draft-name').value = '';
+            document.getElementById('draft-price').value = '';
+            window.loadMenuDrafts();
+        }
+    } catch (e) {
+        console.error("Error saving draft:", e);
+        if (!silent) showToast("Save Failed", e.message, "error");
+    }
+};
+
+window.deleteMenuDraft = async function(id) {
+    window.playSound('click');
+    if (!confirm("Delete this draft?")) return;
+    
+    try {
+        const { error } = await supabaseClient.from('seller_menus').delete().eq('id', id);
+        if (error) throw error;
+        showToast("Deleted", "Draft removed.", "success");
+        window.loadMenuDrafts();
+    } catch (e) {
+        console.error("Error deleting draft:", e);
+        showToast("Delete Failed", e.message, "error");
+    }
+};
+
+window.processAIMenu = async function(input) {
+    if (!input.files || !input.files[0]) return;
+    window.playSound('click');
+    
+    const loadingEl = document.getElementById('ai-loading');
+    loadingEl.classList.remove('hidden');
+    
+    try {
+        const file = input.files[0];
+        
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            const dataUrl = e.target.result;
+            
+            try {
+                if (typeof Tesseract === 'undefined') {
+                    throw new Error("Tesseract.js not loaded.");
+                }
+                
+                const result = await Tesseract.recognize(dataUrl, 'ind+eng', {
+                    logger: m => console.log(m)
+                });
+                
+                const text = result.data.text;
+                console.log("OCR Result:\n", text);
+                
+                const lines = text.split('\n').filter(l => l.trim().length > 0);
+                let foundItems = 0;
+                
+                const regex = /^([a-zA-Z\s]+)[\sRp.-]*(\d+[kK]?(?:\.\d+)?)/i;
+                
+                for (let line of lines) {
+                    const match = line.match(regex);
+                    if (match && match[1].trim().length > 2) {
+                        let fName = match[1].trim();
+                        let fPriceStr = match[2].toLowerCase();
+                        let fPrice = parseInt(fPriceStr.replace(/\./g, ''));
+                        
+                        if (fPriceStr.includes('k')) {
+                            fPrice = parseInt(fPriceStr) * 1000;
+                        }
+                        
+                        if (fPrice > 100) {
+                            await window.saveMenuDraft(fName, fPrice, true);
+                            foundItems++;
+                        }
+                    }
+                }
+                
+                if (foundItems > 0) {
+                    showToast("AI Extraction Success", `Found and imported ${foundItems} items!`, "success");
+                    window.loadMenuDrafts();
+                } else {
+                    showToast("AI Extraction Failed", "Could not find clear Food Name and Price pairs in the image.", "error");
+                }
+                
+            } catch (err) {
+                console.error("Tesseract Error:", err);
+                showToast("OCR Failed", err.message, "error");
+            } finally {
+                loadingEl.classList.add('hidden');
+                input.value = ''; 
+            }
+        };
+        reader.readAsDataURL(file);
+        
+    } catch (err) {
+        console.error("AI Menu Error:", err);
+        loadingEl.classList.add('hidden');
+        showToast("Error", "Failed to read image.", "error");
+    }
+};
+
+window.applyMenuDraft = function(selectEl, reqId) {
+    if (!selectEl.value) return;
+    const [name, price] = selectEl.value.split('|');
+    const nameInput = document.getElementById(`offer-name-${reqId}`);
+    const priceInput = document.getElementById(`offer-price-${reqId}`);
+    
+    if (nameInput) nameInput.value = name;
+    if (priceInput) {
+        priceInput.value = price;
+        priceInput.style.backgroundColor = "#e8f5e9";
+        setTimeout(() => priceInput.style.backgroundColor = "", 1000);
+    }
+};
 window.updateOrderStatus = updateOrderStatus;
 window.showToast = showToast;
